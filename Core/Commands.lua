@@ -14,6 +14,8 @@ local function usage()
   print("  /uk lock       stop the panel being dragged")
   print("  /uk immune     show casts that were immune to interrupts too")
   print("  /uk min <n>    hide casts under n damage")
+  print("  /uk log        is the client writing WoWCombatLog.txt right now?")
+  print("  /uk log on|off set combat logging (same as /combatlog)")
   print("  /uk why        why the addon reports nothing on this client")
 end
 
@@ -42,6 +44,15 @@ SlashCmdList.UNKICKED = function(msg)
       ns.Print("|cffff9933you are on a different client build -- regenerate the data files|r")
     end
 
+  elseif cmd == "log" then
+    if arg == "on" or arg == "off" then
+      ns.Logging:Set(arg == "on")
+    end
+    -- Asked explicitly, so spend a call rather than serve the cache.
+    ns.Logging:Query(true)
+    ns.Print("combat log: %s", (ns.Logging:Label()))
+    for _, l in ipairs(ns.Logging:Lines()) do print("  " .. l.text) end
+
   elseif cmd == "why" then
     ns.Print("what this client allows:")
     if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then
@@ -56,6 +67,7 @@ SlashCmdList.UNKICKED = function(msg)
       (ns.Restricted() and "|cffff2020yes|r" or "|cff40c860no|r"))
     print("  The log file WoW writes to disk is unaffected -- post-run analysis of")
     print("  WoWCombatLog.txt can still answer every question this panel wanted to.")
+    print("  That file right now: " .. (ns.Logging:Label()))
 
   elseif cmd == "lock" then
     ns.db.locked = not ns.db.locked

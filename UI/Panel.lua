@@ -102,7 +102,7 @@ function Panel:Build()
   if frame then return frame end
 
   frame = CreateFrame("Frame", "UnkickedPanel", UIParent, "BackdropTemplate")
-  frame:SetSize(WIDTH, 22 + ROW_H * (ns.db.maxRows or 12) + 20)
+  frame:SetSize(WIDTH, 22 + ROW_H * (ns.db.maxRows or 12) + 20 + ROW_H)
   frame:SetPoint(unpack(ns.db.point))
   frame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -131,9 +131,35 @@ function Panel:Build()
   frame.stat:SetPoint("TOPRIGHT", -8, -6)
 
   frame.footer = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  frame.footer:SetPoint("BOTTOMLEFT", 8, 6)
-  frame.footer:SetPoint("BOTTOMRIGHT", -8, 6)
+  frame.footer:SetPoint("BOTTOMLEFT", 8, 6 + ROW_H)
+  frame.footer:SetPoint("BOTTOMRIGHT", -8, 6 + ROW_H)
   frame.footer:SetJustifyH("LEFT")
+
+  -- Whether the client is writing WoWCombatLog.txt. On 12.x this is the one
+  -- genuinely load-bearing thing the in-game panel still reports, because the
+  -- analysis happens offline and a run you forgot to /combatlog is gone.
+  frame.log = CreateFrame("Button", nil, frame)
+  frame.log:SetPoint("BOTTOMLEFT", 8, 6)
+  frame.log:SetPoint("BOTTOMRIGHT", -8, 6)
+  frame.log:SetHeight(ROW_H)
+  frame.log.text = frame.log:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  frame.log.text:SetPoint("LEFT")
+  frame.log.text:SetJustifyH("LEFT")
+  frame.log.text:SetWordWrap(false)
+  frame.log:SetScript("OnClick", function()
+    local _, v = ns.Logging:Label()
+    -- Only offer the one action we can actually take. Advanced logging is a
+    -- cvar behind a settings panel and we do not change settings behind you.
+    if v == "off" then ns.Logging:Set(true) else ns.Logging:Query(true) end
+    Panel:Refresh()
+  end)
+  frame.log:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine("Combat log", 1, 1, 1)
+    for _, l in ipairs(ns.Logging:Lines()) do GameTooltip:AddLine(l.text, l.r, l.g, l.b) end
+    GameTooltip:Show()
+  end)
+  frame.log:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
   rows = {}
   for i = 1, (ns.db.maxRows or 12) do rows[i] = buildRow(frame, i) end
@@ -180,6 +206,8 @@ function Panel:Refresh()
   local casts, damage, deaths = ns.Cast:Summary()
   frame.stat:SetText(("%d casts  |cffffd200%s|r%s")
     :format(casts, ns.Short(damage), deaths > 0 and ("  |cffff2020%d deaths|r"):format(deaths) or ""))
+
+  frame.log.text:SetText((ns.Logging and ns.Logging:Label()) or "")
 
   if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then
     -- Be blunt rather than look broken: with no combat log there is no feed,

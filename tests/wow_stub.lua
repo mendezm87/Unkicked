@@ -144,6 +144,35 @@ function stub.friend(guid, name)
   return { guid = guid, name = name, flags = COMBATLOG_OBJECT_REACTION_FRIENDLY }
 end
 
+-- ------------------------------------------------------- combat logging state
+-- The real LoggingCombat() is rate limited to 5 calls per 10 seconds shared
+-- across every addon, and returns NIL (not false) when over the limit. That nil
+-- is the whole reason Core/Logging.lua exists, so the stub reproduces it: the
+-- test sets a budget and the stub starts handing back nil once it is spent.
+stub.logging = { on = false, calls = 0, budget = math.huge, advanced = true }
+
+LoggingCombat = function(newState)
+  stub.logging.calls = stub.logging.calls + 1
+  if stub.logging.calls > stub.logging.budget then return nil end
+  if newState ~= nil then stub.logging.on = newState and true or false end
+  return stub.logging.on
+end
+
+C_CVar = {
+  GetCVarBool = function(name)
+    if name ~= "advancedCombatLogging" then return nil end
+    return stub.logging.advanced
+  end,
+}
+
+stub.instance = nil
+IsInInstance = function()
+  if not stub.instance then return false, "none" end
+  return true, stub.instance
+end
+
+C_Timer = { After = function(_, fn) fn() end }
+
 -- Lua 5.2+ moved unpack; WoW is 5.1 where it is global.
 unpack = unpack or table.unpack
 

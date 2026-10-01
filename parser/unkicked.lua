@@ -161,5 +161,13 @@ else
     .. ", %d spells newly proven kickable%s\n"):format(
     session.lines, session.segments, emitted, session.stats.interrupts, session.stats.spends,
     knowledge.learned, session.skipped > 0 and (", " .. session.skipped .. " lines skipped") or ""))
+  -- The offline half of the same question the in-game panel answers: a log
+  -- written without advanced logging has no unit fields, so there are no damage
+  -- amounts and no deaths to attribute. Say so rather than reporting zeroes.
+  if not session.advanced then
+    io.stderr:write("unkicked: this log was written with ADVANCED_LOG_ENABLED,0 -- "
+      .. "no damage or death data is present. Turn on Options > System > Network > "
+      .. "Advanced Combat Logging and log the run again.\n")
+  end
 end
 f:close()

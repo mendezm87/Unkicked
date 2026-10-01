@@ -39,7 +39,11 @@ winget install DEVCOM.Lua      # or: scoop install luajit
 ```
 
 Turn logging on in game — `/combatlog` (and advanced combat logging in
-Options → Network), then:
+Options → Network). **The in-game panel tells you whether you remembered**: its
+bottom line reads `log: on`, `log: on, not advanced` or `log: OFF — /combatlog`,
+and clicking it turns logging on. `/uk log` prints the same thing with the
+reasons. The toggle resets on every logout, so this is the one thing worth
+glancing at before you pull. Then:
 
 ```powershell
 cd path\to\Unkicked

@@ -13,6 +13,7 @@ Data\InterruptData.lua
 Data\CCData.lua
 Core\Init.lua
 Core\Nameplates.lua
+Core\Logging.lua
 Core\KickTracker.lua
 Core\CastTracker.lua
 UI\Panel.lua

@@ -28,7 +28,8 @@ local function loadAddon()
   ns = {}
   local files = {
     "Data/InterruptData.lua", "Data/CCData.lua",
-    "Core/Init.lua", "Core/Nameplates.lua", "Core/KickTracker.lua", "Core/CastTracker.lua",
+    "Core/Init.lua", "Core/Logging.lua", "Core/Nameplates.lua", "Core/KickTracker.lua",
+    "Core/CastTracker.lua",
   }
   for _, f in ipairs(files) do
     local chunk = assert(loadfile(f), "cannot load " .. f)
@@ -394,6 +395,80 @@ ok(pcall(function() ns.Kick:Rebuild() end),
   "roster rebuild survives a secret party GUID")
 eq(ns.Kick.players[DK.guid], nil,
   "a player whose GUID is unusable is dropped, not keyed by a secret")
+
+-- ======================================== R-21: is the client writing the log?
+-- The offline parser is the whole product now, and it is worthless against a run
+-- you forgot to /combatlog. The panel reports that state -- and must never claim
+-- "off" when the truth is "the rate limiter would not tell me".
+print("\n[logging] combat-log state indicator")
+
+local function freshLogging()
+  local n = loadAddon()
+  stub.logging.calls, stub.logging.budget = 0, math.huge
+  return n
+end
+
+-- on + advanced: the parser will get everything
+ns = freshLogging()
+stub.logging.on, stub.logging.advanced = true, true
+eq(ns.Logging:Verdict(), "ready", "logging on with advanced data reads as ready")
+
+-- on, advanced off: a log with no unit fields is not a usable log
+ns = freshLogging()
+stub.logging.on, stub.logging.advanced = true, false
+eq(ns.Logging:Verdict(), "basic", "advanced logging off is reported separately, not as ready")
+
+ns = freshLogging()
+stub.logging.on, stub.logging.advanced = false, true
+eq(ns.Logging:Verdict(), "off", "logging off reads as off")
+
+-- An unreadable cvar must not masquerade as "advanced is off".
+ns = freshLogging()
+stub.logging.on, stub.logging.advanced = true, nil
+eq(ns.Logging:Verdict(), "unknown-advanced",
+  "an unreadable advanced cvar reads as unknown, not as off")
+
+-- THE important one. Over the shared 5-per-10s budget LoggingCombat returns nil.
+-- Treating that as false would tell you to /combatlog while you already were.
+ns = freshLogging()
+stub.logging.on, stub.logging.advanced = true, true
+eq(ns.Logging:Verdict(), "ready", "first query answers")
+stub.logging.budget = stub.logging.calls      -- every further call is rate limited
+stub.advance(30)
+eq(ns.Logging:Verdict(), "ready", "a rate limited query keeps the last known state")
+local _, _, limited = ns.Logging:State()
+eq(limited, true, "a rate limited query is flagged stale")
+ok(ns.Logging:Label():find("stale", 1, true) ~= nil, "the panel label says stale")
+
+-- Never seen an answer at all is distinct from "off".
+ns = freshLogging()
+stub.logging.budget = 0
+eq(ns.Logging:Verdict(), "unknown", "with no answer ever, the state is unknown -- not off")
+
+-- And the budget is respected: a panel refresh every frame must not poll.
+ns = freshLogging()
+stub.logging.on = true
+ns.Logging:Query(true)
+local spent = stub.logging.calls
+for _ = 1, 50 do ns.Logging:Query() end
+eq(stub.logging.calls, spent, "50 cached queries inside the gap spend no further calls")
+stub.advance(6)
+ns.Logging:Query()
+eq(stub.logging.calls, spent + 1, "one call is spent once the rate-limit gap elapses")
+
+-- Entering a dungeon with logging off says so, once.
+ns = freshLogging()
+stub.logging.on = false
+stub.instance = "party"
+local said = 0
+local realPrint = print
+print = function(...) said = said + 1; realPrint(...) end
+stub.fire("PLAYER_ENTERING_WORLD")
+stub.fire("PLAYER_REGEN_DISABLED")
+stub.fire("PLAYER_REGEN_DISABLED")
+print = realPrint
+eq(said, 1, "the logging-off reminder fires once per zone, not once per pull")
+stub.instance = nil
 
 -- ============================================================ the offline path
 -- parser/host.lua defines the same client globals this file stubs, so the offline
