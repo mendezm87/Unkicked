@@ -24,11 +24,16 @@ local host = require("host")
 local Session = require("session")
 local Knowledge = require("knowledge")
 local report = require("report")
+local Totals = require("totals")
 
 -- --------------------------------------------------------------------- options
 local opts = {
   follow = false, fromStart = false, json = false, model = false,
   quietGap = 5, minDamage = 0, color = true, file = nil,
+  -- Which segment to print, the way a damage meter toggles current fight vs
+  -- overall: "current" = per pull only, "overall" = the run total only,
+  -- "both" = each pull as it ends plus the total when the run does.
+  segment = "both", top = 8,
   knowledge = HERE .. "/learned-interruptible.lua",
   poll = 1,
 }
@@ -43,6 +48,10 @@ unkicked -- reports the enemy casts nobody stopped, per pull, from WoWCombatLog.
   --from-start        with --follow, replay the existing file first
   --quiet-gap N       seconds of calm that end a trash pull (default 5)
   --min-damage N      hide casts below N damage
+  --current           report each pull only, no run total
+  --overall           report only the end-of-run total
+  --both              both (default): each pull, then the total when the run ends
+  --top N             rows per section in the overall report (default 8)
   --model             append what we believe about each party member's interrupt
   --json              one JSON object per pull on stdout
   --no-color          plain output
@@ -60,6 +69,10 @@ while i <= #a do
   elseif v == "--from-start" then opts.fromStart = true
   elseif v == "--json" then opts.json = true
   elseif v == "--model" then opts.model = true
+  elseif v == "--current" then opts.segment = "current"
+  elseif v == "--overall" then opts.segment = "overall"
+  elseif v == "--both" then opts.segment = "both"
+  elseif v == "--top" then i = i + 1; opts.top = tonumber(a[i]) or 8
   elseif v == "--no-color" then opts.color = false
   elseif v == "--quiet-gap" then i = i + 1; opts.quietGap = tonumber(a[i]) or 5
   elseif v == "--min-damage" then i = i + 1; opts.minDamage = tonumber(a[i]) or 0
@@ -106,6 +119,12 @@ local ns = host.init(ROOT)
 local knowledge = Knowledge.load(opts.knowledge)
 
 local emitted = 0
+local showPulls = opts.segment ~= "overall"
+local showOverall = opts.segment ~= "current"
+
+-- One Totals per run, plus a grand total in case the log covers several runs.
+local totals, grand = nil, Totals.new({ zone = "all runs" })
+
 local session = Session.new(ns, {
   host = host,
   quietGap = opts.quietGap,
@@ -113,10 +132,31 @@ local session = Session.new(ns, {
   onPull = function(pull)
     emitted = emitted + 1
     knowledge:save()
+    if not totals or totals.run ~= pull.run then totals = Totals.new(pull.run) end
+    totals:add(pull, opts.minDamage)
+    grand:add(pull, opts.minDamage)
+
+    if showPulls then
+      if opts.json then
+        io.write(report.json(pull, opts), "\n")
+      else
+        io.write(report.text(pull, opts), "\n")
+        -- In --follow this is the only thing keeping the run total in view
+        -- between pulls; when replaying a file the overall follows anyway.
+        if showOverall and opts.follow then
+          io.write(report.runningLine(totals, opts), "\n")
+        end
+        io.write("\n")
+      end
+    end
+    io.stdout:flush()
+  end,
+  onRun = function(run)
+    if not (showOverall and totals and totals.run == run) then return end
     if opts.json then
-      io.write(report.json(pull, opts), "\n")
+      io.write(report.overallJson(totals), "\n")
     else
-      io.write(report.text(pull, opts), "\n\n")
+      io.write(report.overall(totals, opts), "\n\n")
     end
     io.stdout:flush()
   end,
@@ -157,6 +197,15 @@ else
   drain()
   session:flush()
   knowledge:save()
+  -- Several instances in one file: the per-run reports are the useful ones, but
+  -- a file-wide total is what "overall" means if you pointed this at an archive.
+  if showOverall and session.runs > 1 and not grand:empty() then
+    if opts.json then
+      io.write(report.overallJson(grand), "\n")
+    else
+      io.write(report.overall(grand, opts), "\n\n")
+    end
+  end
   io.stderr:write(("unkicked: %d lines, %d pulls (%d reported), %d interrupts seen, %d spends"
     .. ", %d spells newly proven kickable%s\n"):format(
     session.lines, session.segments, emitted, session.stats.interrupts, session.stats.spends,

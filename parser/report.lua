@@ -111,6 +111,112 @@ function M.text(pull, opts)
   return table.concat(out, "\n")
 end
 
+-- ------------------------------------------------------------------- overall
+-- The end-of-run segment. Same data as the per-pull reports, aggregated: what
+-- got through across the whole instance, which spells cost the most, who was
+-- casting them, and -- carefully labelled -- how often each party member's
+-- interrupt was believed available while something got through.
+local function runLabel(run)
+  local bits = { (run and run.zone) or "run" }
+  if run and run.keystone then bits[#bits + 1] = ("+%d"):format(run.keystone) end
+  return table.concat(bits, " ")
+end
+
+function M.overall(t, opts)
+  opts = opts or {}
+  local c = paint(opts.color)
+  local out = {}
+  local run = t.run or {}
+
+  out[#out + 1] = ("%s== overall  %s  %s in combat  %d pull%s%s%s"):format(
+    c.bold, runLabel(run), clock(t.duration or 0), t.pulls, t.pulls == 1 and "" or "s",
+    t.bosses > 0 and ("  %d/%d bosses"):format(t.kills, t.bosses) or "", c.reset)
+
+  -- Deaths caused by a cast we cannot yet prove was kickable are reported
+  -- separately rather than folded in or dropped: they are not missed kicks, but
+  -- "no deaths caused" would contradict the pull reports that said KILLED.
+  local deathBit
+  if t.deaths > 0 then
+    deathBit = ("%s%d death%s caused%s"):format(c.red, t.deaths,
+      t.deaths == 1 and "" or "s", c.reset)
+  elseif (t.unknownDeaths or 0) > 0 then
+    deathBit = ("%sno deaths from a proven cast%s"):format(c.green, c.reset)
+  else
+    deathBit = c.green .. "no deaths caused" .. c.reset
+  end
+  out[#out + 1] = ("  %s%d unkicked cast%s  %s%s dmg%s  %s"):format(
+    c.bold, t.unkicked, t.unkicked == 1 and "" or "s", c.reset .. c.bold,
+    short(t.damage), c.reset, deathBit)
+
+  if t.unkicked == 0 and t.unknown == 0 then
+    out[#out + 1] = ("  %snothing got through all run%s"):format(c.green, c.reset)
+  end
+
+  local spells = t:topSpells(opts.top or 8)
+  if #spells > 0 then
+    out[#out + 1] = ("  %s-- by spell --%s"):format(c.dim, c.reset)
+    for _, sp in ipairs(spells) do
+      out[#out + 1] = ("  %-28s %s%8s%s  %s%2d cast%s%s%s"):format(
+        trunc(sp.name or "?", 28), c.bold, short(sp.damage), c.reset,
+        c.dim, sp.count, sp.count == 1 and " " or "s", c.reset,
+        sp.deaths > 0 and ("  %s%d death%s%s"):format(c.red, sp.deaths,
+          sp.deaths == 1 and "" or "s", c.reset) or "")
+    end
+  end
+
+  local sources = t:topSources(opts.top or 8)
+  if #sources > 1 then
+    out[#out + 1] = ("  %s-- by caster --%s"):format(c.dim, c.reset)
+    for _, sp in ipairs(sources) do
+      out[#out + 1] = ("  %-28s %s%8s%s  %s%2d cast%s%s"):format(
+        trunc(sp.name, 28), c.bold, short(sp.damage), c.reset,
+        c.dim, sp.count, sp.count == 1 and " " or "s", c.reset)
+    end
+  end
+
+  local players = t:byPlayer()
+  if #players > 0 then
+    -- R-7: this is a count of chances, not of failures. The log cannot see
+    -- whether a player was in range of the caster or busy keeping the group
+    -- alive, so the header says chances and the verdict stays with the human.
+    out[#out + 1] = ("  %s-- interrupt available when a cast got through (chances, not blame) --%s")
+      :format(c.dim, c.reset)
+    for _, p in ipairs(players) do
+      out[#out + 1] = ("  %-20s %s%3d up%s  %s%3d on cd   %3d cc   %3d unknown%s"):format(
+        trunc(p.name, 20), c.yellow, p.chances, c.reset, c.dim, p.down, p.cc, p.unknown, c.reset)
+    end
+  end
+
+  local worst = t:topCasts(opts.top or 5)
+  if #worst > 0 then
+    out[#out + 1] = ("  %s-- worst single casts --%s"):format(c.dim, c.reset)
+    for _, w in ipairs(worst) do
+      out[#out + 1] = ("  %spull %-3d%s %-26s %-20s %s%8s%s%s"):format(
+        c.dim, w.pull, c.reset, trunc(w.spell or "?", 26), trunc(w.source, 20),
+        c.bold, short(w.damage), c.reset,
+        w.deaths > 0 and ("  %sKILLED %d%s"):format(c.red, w.deaths, c.reset) or "")
+    end
+  end
+
+  if t.unknown > 0 then
+    out[#out + 1] = ("  %s%d further cast%s (%s dmg%s) not yet proven kickable -- excluded above%s")
+      :format(c.dim, t.unknown, t.unknown == 1 and "" or "s", short(t.unknownDamage),
+        (t.unknownDeaths or 0) > 0
+          and (", %s%d death%s%s"):format(c.red, t.unknownDeaths,
+            t.unknownDeaths == 1 and "" or "s", c.reset .. c.dim) or "",
+        c.reset)
+  end
+  return table.concat(out, "\n")
+end
+
+-- A single line, for keeping a running total visible between pulls in --follow.
+function M.runningLine(t, opts)
+  local c = paint((opts or {}).color)
+  return ("  %srun so far: %d pull%s, %d unkicked, %s dmg, %d death%s%s"):format(
+    c.dim, t.pulls, t.pulls == 1 and "" or "s", t.unkicked, short(t.damage),
+    t.deaths, t.deaths == 1 and "" or "s", c.reset)
+end
+
 local function esc(s)
   return (tostring(s):gsub('[%c"\\]', function(ch)
     if ch == '"' then return '\\"' elseif ch == "\\" then return "\\\\" end
@@ -149,6 +255,27 @@ function M.json(pull, opts)
   return ('{"pull":%d,"kind":"%s","name":"%s","duration":%.1f,"outcome":%s,"casts":[%s]}')
     :format(pull.index, pull.kind, esc(pull.name or ""), pull.duration or 0,
       pull.outcome and ('"' .. esc(pull.outcome) .. '"') or "null", table.concat(parts, ","))
+end
+
+function M.overallJson(t)
+  local run = t.run or {}
+  local parts = {}
+  for _, sp in ipairs(t:topSpells(nil)) do
+    parts[#parts + 1] = ('{"spellID":%d,"spell":"%s","casts":%d,"damage":%d,"deaths":%d}')
+      :format(sp.spellID, esc(sp.name or "?"), sp.count, sp.damage, sp.deaths)
+  end
+  local who = {}
+  for _, p in ipairs(t:byPlayer()) do
+    who[#who + 1] = ('{"name":"%s","available":%d,"onCooldown":%d,"cc":%d,"unknown":%d}')
+      :format(esc(p.name), p.chances, p.down, p.cc, p.unknown)
+  end
+  return ('{"overall":true,"run":%d,"zone":"%s","keystone":%s,"pulls":%d,"bosses":%d,'
+    .. '"kills":%d,"combatSeconds":%.1f,"unkicked":%d,"damage":%d,"deaths":%d,'
+    .. '"unprovenCasts":%d,"unprovenDamage":%d,"unprovenDeaths":%d,"spells":[%s],"players":[%s]}')
+    :format(run.index or 0, esc(run.zone or ""), run.keystone and tostring(run.keystone) or "null",
+      t.pulls, t.bosses, t.kills, t.duration or 0, t.unkicked, t.damage, t.deaths,
+      t.unknown, t.unknownDamage, t.unknownDeaths or 0,
+      table.concat(parts, ","), table.concat(who, ","))
 end
 
 return M

@@ -50,6 +50,44 @@ cd path\to\Unkicked
 lua parser\unkicked.lua --follow --model
 ```
 
+### Current pull vs. the whole run
+
+Like a damage meter's segment toggle:
+
+```powershell
+lua parser\unkicked.lua --both      # default: each pull, then the run total
+lua parser\unkicked.lua --current   # pulls only
+lua parser\unkicked.lua --overall   # the run total only
+lua parser\unkicked.lua --overall --top 5
+```
+
+The run total prints when the run ends — which the log states, so it is the real
+end of the dungeon rather than a guess:
+
+```
+== overall  Kings' Rest  17:51 in combat  13 pulls  4/4 bosses
+  26 unkicked casts  7.1m dmg  no deaths from a proven cast
+  -- by spell --
+  Wretched Discharge               4.0m   3 casts
+  Hex Volley                       1.6m   1 cast
+  Spectral Bolt                    974k  13 casts
+  -- interrupt available when a cast got through (chances, not blame) --
+  Aigirlf-Illidan-US    16 up    0 on cd     2 cc     8 unknown
+  Spirtbreaker-Pereno…  11 up   13 on cd     1 cc     0 unknown
+  -- worst single casts --
+  pull 7   Wretched Discharge         Half-Finished Mummy      1.7m
+  120 further casts (22.0m dmg, 2 deaths) not yet proven kickable -- excluded above
+```
+
+One instance is one run (`ZONE_CHANGE` says so in the log), so pointing this at
+an archive containing several keys gives you one report each plus a file-wide
+total. In `--follow` mode a one-line running total is appended after each pull so
+the run figure stays visible between pulls.
+
+**Read the player column as chances, not blame.** It counts how often someone's
+interrupt was believed up while a cast got through. The log cannot see whether
+they were in range of the caster or busy keeping the group alive.
+
 **macOS / Linux:**
 
 ```sh

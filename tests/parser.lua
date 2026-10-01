@@ -33,6 +33,7 @@ local host = require("host")
 local Session = require("session")
 local Knowledge = require("knowledge")
 local report = require("report")
+local Totals = require("totals")
 
 -- ===================================================== the line format itself
 print("\n[parser] timestamps and field splitting")
@@ -231,6 +232,117 @@ do
   eq(nullKeyed, false, "the null GUID is never added as a nameless member")
 end
 
+-- ====================================== P-10 / R-13: the overall run segment
+print("\n[parser] overall totals and run segmentation")
+do
+  local t = Totals.new({ zone = "Tideburn Deep" })
+  local proven, provenDmg, provenDeaths = 0, 0, 0
+  for _, pull in ipairs(pulls) do
+    t:add(pull, 0)
+    for _, r in ipairs(pull.records) do
+      if r.interruptible == true then
+        proven = proven + 1
+        provenDmg = provenDmg + (r.damage or 0)
+        for _ in pairs(r.deaths or {}) do provenDeaths = provenDeaths + 1 end
+      end
+    end
+  end
+  eq(t.pulls, #pulls, "every reported pull lands in the overall")
+  eq(t.unkicked, proven, "the overall cast count is the sum of the proven casts")
+  eq(t.damage, provenDmg, "and the damage total is the sum of theirs, not a re-derivation")
+  eq(t.deaths, provenDeaths, "a death is counted once in the overall, not once per pull")
+  eq(t.bosses, 1, "the boss pull is counted as a boss")
+  eq(t.kills, 1, "and its kill is recorded")
+
+  -- Immune casts never reach the total, the same partition the per-pull view uses.
+  local immune = Totals.new({})
+  immune:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 1, spellName = "Immune Thing", srcName = "X", damage = 9999,
+      interruptible = false, deaths = {}, kicks = {} },
+  } }, 0)
+  eq(immune.unkicked, 0, "a cast known to be immune is not a missed kick")
+  eq(immune.unknown, 0, "nor is it an unproven one")
+
+  -- The regression this section exists for: a death caused by a cast we cannot
+  -- prove was kickable must not be silently dropped, or the overall prints
+  -- "no deaths caused" for a run whose pull reports said KILLED.
+  local u = Totals.new({})
+  u:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 2, spellName = "Shadow Barrage", srcName = "Shadow of Zul", damage = 126000,
+      interruptible = nil, deaths = { ["Aigirlf"] = 84000 }, kicks = {} },
+  } }, 0)
+  eq(u.unkicked, 0, "an unproven cast stays out of the unkicked total")
+  eq(u.deaths, 0, "and out of the deaths-caused total")
+  eq(u.unknownDeaths, 1, "but its death is counted as an unproven-cast death")
+  local txt = report.overall(u, { color = false })
+  ok(txt:find("no deaths caused", 1, true) == nil,
+    "the overall never claims 'no deaths caused' when an unproven cast killed someone")
+  has(txt, "1 death", "the unproven footer states the death")
+
+  -- Sorted views: by damage, then stable by name.
+  local ranked = Totals.new({})
+  ranked:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 10, spellName = "Small", srcName = "A", damage = 10, interruptible = true, deaths = {}, kicks = {} },
+    { spellID = 11, spellName = "Big", srcName = "B", damage = 1000, interruptible = true, deaths = {}, kicks = {} },
+  } }, 0)
+  eq(ranked:topSpells(1)[1].name, "Big", "spells rank by damage")
+  eq(ranked:topSources(1)[1].name, "B", "so do casters")
+
+  -- Chances, not blame (R-7): the per-player column counts availability.
+  local who = Totals.new({})
+  who:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 12, spellName = "Bolt", srcName = "C", damage = 5, interruptible = true, deaths = {},
+      kicks = { ready = { { name = "Up" } }, down = { { name = "Down" } }, cc = {}, unknown = {} } },
+  } }, 0)
+  eq(who.players["Up"].chances, 1, "a player whose interrupt was up gets a chance counted")
+  eq(who.players["Down"].down, 1, "and one on cooldown is counted as unavailable")
+  has(report.overall(who, { color = false }), "chances, not blame",
+    "the header refuses to read as a blame table")
+end
+
+do
+  -- Runs are read from ZONE_CHANGE, not inferred. A zone walked through without
+  -- a pull is not a run, and several ZONE_CHANGE lines for one instance are one.
+  local runs = {}
+  local ns3 = host.init(".")
+  local s3 = Session.new(ns3, {
+    host = host, quietGap = 5, knowledge = Knowledge.load("/dev/null"),
+    onPull = function() end, onRun = function(r) runs[#runs + 1] = r end,
+  })
+  local function L(t, body) s3:line(("9/30/2026 %s-7  %s"):format(t, body)) end
+  L("22:00:00.000", "COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.0,PROJECT_ID,1")
+  L("22:00:01.000", "ZONE_CHANGE,1762,\"Kings' Rest\",23")
+  L("22:00:02.000", "ZONE_CHANGE,1762,\"Kings' Rest\",23")
+  L("22:00:03.000", "ENCOUNTER_START,2139,\"The Golden Serpent\",23,5,1762")
+  L("22:00:40.000", "ENCOUNTER_END,2139,\"The Golden Serpent\",23,5,1,37000")
+  L("22:01:00.000", "ZONE_CHANGE,0,\"Silvermoon City\",0")
+  L("22:02:00.000", "ZONE_CHANGE,2293,\"Atal'Dazar\",23")
+  L("22:02:01.000", "ENCOUNTER_START,2082,\"Priestess Alun'za\",23,5,2293")
+  L("22:02:30.000", "ENCOUNTER_END,2082,\"Priestess Alun'za\",23,5,0,29000")
+  s3:flush()
+
+  eq(#runs, 2, "two instances in one log produce two runs")
+  eq(runs[1].zone, "Kings' Rest", "the run is named from ZONE_CHANGE")
+  eq(runs[1].pulls, 1, "with the pulls that happened inside it")
+  eq(runs[2].zone, "Atal'Dazar", "and the second is its own run")
+  eq(s3.runs, 2, "the open-world zone between them is not counted as a run")
+end
+
+do
+  -- A log can start mid-dungeon, with no ZONE_CHANGE to open a run. The pulls
+  -- must still be totalled rather than dropped on the floor.
+  local runs = {}
+  local ns4 = host.init(".")
+  local s4 = Session.new(ns4, {
+    host = host, quietGap = 5, knowledge = Knowledge.load("/dev/null"),
+    onPull = function() end, onRun = function(r) runs[#runs + 1] = r end,
+  })
+  for line in io.lines("tests/fixtures/sample-combatlog.txt") do s4:line(line) end
+  s4:flush()
+  eq(#runs, 1, "a log with no ZONE_CHANGE still produces one implicit run")
+  eq(runs[1].pulls, 2, "carrying every pull in the file")
+end
+
 print("\n[parser] rendering")
 local text = report.text(pulls[1], { color = false, model = true })
 has(text, "KILLED Rek-Illidan", "the death is called out")
@@ -240,6 +352,14 @@ has(json, '"spellID":400001', "json carries the spell id")
 has(json, '"kicksUp":["Frosty-Illidan"', "and who had a kick up")
 ok(loadstring("return " .. (json:gsub("[%[%]]", { ["["] = "{", ["]"] = "}" })
   :gsub('"(%w+)":', "[%q]="))) ~= nil, "the json is at least structurally balanced")
+do
+  local t = Totals.new({ index = 1, zone = "Kings' Rest", keystone = 10 })
+  for _, pull in ipairs(pulls) do t:add(pull, 0) end
+  local oj = report.overallJson(t)
+  has(oj, '"overall":true', "the overall json is tagged so an overlay can route it")
+  has(oj, '"keystone":10', "and carries the key level when the log stated one")
+  has(oj, '"unprovenDeaths":', "and reports unproven-cast deaths rather than hiding them")
+end
 
 print(("\n%d passed, %d failed"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

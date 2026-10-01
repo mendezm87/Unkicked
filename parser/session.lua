@@ -11,6 +11,12 @@
 --     the fighting stops rather than the instant it does.
 --   * ZONE_CHANGE / MAP_CHANGE / CHALLENGE_MODE_START close whatever was open.
 --
+-- Runs:
+--   One instance = one run, for the overall/end-of-dungeon totals. ZONE_CHANGE
+--   states the instance id, name and difficulty and the next ZONE_CHANGE ends
+--   it, so a run boundary is read from the log rather than inferred. A log with
+--   three keys in it therefore produces three overall reports, not one blend.
+--
 -- Cooldown state deliberately survives across pulls -- a kick spent four seconds
 -- before the next pack is still down -- so only the cast records are cleared.
 
@@ -42,9 +48,12 @@ function Session.new(ns, opts)
     quietGap = (opts and opts.quietGap) or 5,
     knowledge = opts and opts.knowledge,
     onPull = opts and opts.onPull,
+    onRun = opts and opts.onRun,
     host = opts and opts.host,
     advanced = true,
     pull = nil,
+    run = nil,
+    runs = 0,
     lastCombatAt = nil,
     pulls = 0,          -- reported pulls
     segments = 0,       -- everything we opened, including empty ones
@@ -90,6 +99,37 @@ function Session:onCombatantInfo(fields)
   self.roster[info.guid] = true
 end
 
+-- ------------------------------------------------------------------- the runs
+function Session:openRun(at, zoneID, zone, difficulty)
+  self:closeRun(at)
+  self.runs = self.runs + 1
+  self.run = {
+    index = self.runs, zoneID = zoneID, zone = zone, difficulty = difficulty,
+    startedAt = at, pulls = 0,
+  }
+  return self.run
+end
+
+function Session:closeRun(at)
+  local run = self.run
+  self.run = nil
+  if not run then return end
+  run.endedAt = at or self.now or run.startedAt
+  run.elapsed = run.endedAt - run.startedAt
+  -- A zone we only walked through is not a run worth totalling.
+  if run.pulls == 0 then self.runs = self.runs - 1; return end
+  if self.onRun then self.onRun(run) end
+end
+
+-- A log can begin mid-dungeon -- the client rolls a new file whenever it likes --
+-- so there may never be a ZONE_CHANGE to open the first run with. Rather than
+-- drop every pull before the first zone line, open an implicit run at the first
+-- reported pull and label it from whatever the log last told us.
+function Session:ensureRun(at)
+  if self.run then return self.run end
+  return self:openRun(at, self.lastZoneID, self.lastZone or "run", self.lastDifficulty)
+end
+
 -- ------------------------------------------------------------------ the pulls
 function Session:openPull(at, name, kind)
   self:closePull(at)
@@ -117,6 +157,9 @@ function Session:closePull(at, outcome)
 
   self.pulls = self.pulls + 1
   pull.index = self.pulls
+  local run = self:ensureRun(pull.startedAt)
+  run.pulls = run.pulls + 1
+  pull.run = run
   pull.kicks = self:kickSnapshot()
   if self.onPull then self.onPull(pull) end
 end
@@ -199,8 +242,30 @@ function Session:line(line)
   if event == "ENCOUNTER_END" then
     return self:closePull(ts, f[6] == "1" and "kill" or "wipe")
   end
-  if event == "ZONE_CHANGE" or event == "MAP_CHANGE" or event == "CHALLENGE_MODE_START"
-     or event == "CHALLENGE_MODE_END" then
+  if event == "ZONE_CHANGE" then
+    self:closePull(ts)
+    local zoneID = tonumber(f[2])
+    local zone, difficulty = f[3], tonumber(f[4])
+    -- Several ZONE_CHANGE lines for the same instance appear back to back on
+    -- load; only a genuinely different instance id is a new run.
+    if not self.run or self.run.zoneID ~= zoneID then
+      self:closeRun(ts)
+      self.lastZoneID, self.lastZone, self.lastDifficulty = zoneID, zone, difficulty
+      -- difficulty 0 / instance id 0 is the open world, which is not a run.
+      if zoneID and zoneID ~= 0 then self:openRun(ts, zoneID, zone, difficulty) end
+    end
+    return
+  end
+  if event == "CHALLENGE_MODE_START" then
+    self:closePull(ts)
+    -- Enriches the run label with the key rather than starting a new one: the
+    -- ZONE_CHANGE that put us in the instance already opened it.
+    local run = self:ensureRun(ts)
+    run.keystone = tonumber(f[5])
+    run.zone = f[2] or run.zone
+    return
+  end
+  if event == "MAP_CHANGE" or event == "CHALLENGE_MODE_END" then
     return self:closePull(ts)
   end
 
@@ -262,6 +327,7 @@ end
 -- reported rather than silently dropped.
 function Session:flush()
   self:closePull(self.now)
+  self:closeRun(self.now)
 end
 
 return Session
