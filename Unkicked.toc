@@ -1,0 +1,19 @@
+## Interface: 120100
+## Title: Unkicked
+## Notes: Lists the enemy casts nobody stopped, what they cost, and whose interrupt was up.
+## Author: Manny Mendez
+## Version: 0.1.0
+## SavedVariables: UnkickedDB
+## X-Category: Combat
+## X-License: MIT
+## IconTexture: Interface\Icons\Ability_Kick
+## Category-enUS: Combat
+
+Data\InterruptData.lua
+Data\CCData.lua
+Core\Init.lua
+Core\Nameplates.lua
+Core\KickTracker.lua
+Core\CastTracker.lua
+UI\Panel.lua
+Core\Commands.lua
