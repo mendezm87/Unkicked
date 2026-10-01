@@ -175,13 +175,22 @@ handle.SPELL_AURA_REMOVED = function(ts, _, _, _, dstGUID, _, spellID)
   if isPartyPlayer(dstGUID) then ns.Kick:OnAuraRemoved(dstGUID, spellID, GetTime()) end
 end
 
-ns.On("COMBAT_LOG_EVENT_UNFILTERED", function()
+-- The combat-log feed, kept as a named entry point rather than an anonymous
+-- handler. Since 12.0.0 the client will not deliver it (see ns.blocked), so the
+-- only things that can drive it are the test harness and an offline parser of
+-- WoWCombatLog.txt -- both of which hand us the same field order.
+function Cast:Ingest(ts, event, srcGUID, srcName, srcFlags, dstGUID, dstName, ...)
   if not ns.db or not ns.db.enabled then return end
-  local ts, event, _, srcGUID, srcName, srcFlags, _, dstGUID, dstName, dstFlags, _,
-        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 = CombatLogGetCurrentEventInfo()
   local fn = handle[event]
   if not fn then return end
-  fn(ts, srcGUID, srcName, srcFlags, dstGUID, dstName, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
+  fn(ts, srcGUID, srcName, srcFlags, dstGUID, dstName, ...)
+end
+
+ns.On("COMBAT_LOG_EVENT_UNFILTERED", function()
+  local ts, event, _, srcGUID, srcName, srcFlags, _, dstGUID, dstName, dstFlags, _,
+        a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 = CombatLogGetCurrentEventInfo()
+  Cast:Ingest(ts, event, srcGUID, srcName, srcFlags, dstGUID, dstName,
+    a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
 end)
 
 ns.On("PLAYER_REGEN_DISABLED", function()

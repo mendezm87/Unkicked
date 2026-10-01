@@ -39,14 +39,39 @@ UIParent = {}
 stub.units = {}
 stub.groupSize = 0
 
-UnitGUID = function(u) local x = stub.units[u]; return x and x.guid end
+stub.nameplates = {}
+UnitGUID = function(u)
+  if stub.nameplates[u] then return stub.nameplates[u] end
+  local x = stub.units[u]; return x and x.guid
+end
 UnitName = function(u) local x = stub.units[u]; return x and x.name end
 UnitClass = function(u) local x = stub.units[u]; return x and x.class, x and x.class end
 UnitIsDeadOrGhost = function() return false end
 GetNumGroupMembers = function() return stub.groupSize end
 IsInRaid = function() return false end
 IsPlayerSpell = function(id) local p = stub.units.player; return p and p.spells and p.spells[id] or false end
-UnitCastingInfo = function() return nil end
+-- ------------------------------------------------- secret values (12.0.0+)
+-- The real client hands back opaque userdata that Lua may hold but not test.
+-- We cannot reproduce that at the VM level, so we tag a wrapper table and make
+-- issecretvalue recognise it: enough to prove the addon routes every guarded
+-- read through ns.Plain instead of testing it directly.
+local SECRET = {}
+function stub.secret(v) return setmetatable({ v }, SECRET) end
+issecretvalue = function(v)
+  return type(v) == "table" and getmetatable(v) == SECRET
+end
+
+-- unit token -> { name, spellID, notInterruptible } or nil
+stub.casting = {}
+function stub.setCasting(token, info) stub.casting[token] = info end
+
+UnitCastingInfo = function(u)
+  local c = stub.casting[u]
+  if not c then return nil end
+  -- real return order: name, text, texture, startMs, endMs, isTradeskill,
+  --                    notInterruptible, spellID (8th in modern clients)
+  return c.name, c.name, nil, 0, 0, false, c.notInterruptible, c.spellID, c.spellID
+end
 UnitChannelInfo = function() return nil end
 
 function stub.setParty(members)
@@ -101,7 +126,14 @@ function stub.cleu(subevent, src, dst, extra)
     dst and dst.guid or nil, dst and dst.name or nil, dst and dst.flags or 0, 0,
   }
   for _, v in ipairs(extra or {}) do payload[#payload + 1] = v end
-  stub.fire("COMBAT_LOG_EVENT_UNFILTERED")
+  -- The client refuses to deliver this event since 12.0.0, so there is no
+  -- registered handler to fire. Drive the model's entry point directly -- the
+  -- same way an offline WoWCombatLog.txt parser would have to.
+  local ns = stub.ns
+  ns.Cast:Ingest(payload[1], subevent, payload[4], payload[5], payload[6],
+    payload[8], payload[9],
+    payload[12], payload[13], payload[14], payload[15], payload[16],
+    payload[17], payload[18], payload[19], payload[20], payload[21])
 end
 
 -- shorthand actor constructors

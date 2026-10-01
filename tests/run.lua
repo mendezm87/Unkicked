@@ -36,6 +36,7 @@ local function loadAddon()
   end
   UnkickedDB = nil
   stub.fire("ADDON_LOADED", "Unkicked")
+  stub.ns = ns
   return ns
 end
 
@@ -309,6 +310,33 @@ eq(casts, 2, "summary counts both casts")
 eq(dmg, 1000, "summary totals the damage")
 ns.Cast:Wipe()
 eq(#ns.Cast.records, 0, "wipe clears the list")
+
+-- ====================================== 12.0 restrictions (R-15, R-16, R-17)
+-- These pin the client's new refusals so a future "it reports nothing" bug is
+-- distinguishable from the client simply not handing us the data.
+print("\n[R-15] Midnight restrictions are handled, not hit")
+loadAddon()
+ok(ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] == true,
+  "CLEU registration is refused up front, never attempted")
+ok(not stub.registered("COMBAT_LOG_EVENT_UNFILTERED"),
+  "RegisterEvent is never called for the forbidden event")
+ok(stub.registered("NAME_PLATE_UNIT_ADDED"),
+  "unrestricted events still register normally")
+
+print("\n[R-16] secret values are held, never tested")
+eq(ns.Plain(42), 42, "a plain value passes through")
+eq(ns.Plain(stub.secret(42)), nil, "a secret value is reported as unknown")
+eq(ns.IsSecret(stub.secret(true)), true, "secrets are detected")
+eq(ns.IsSecret(false), false, "plain false is not a secret")
+
+print("\n[R-17] an unreadable interruptible flag reads as unknown, not as yes")
+loadAddon(); freshParty(); stub.advance(ns.COLD_START + 1)
+stub.nameplates["nameplate1"] = E.guid
+stub.setCasting("nameplate1", { name = "Big Bolt", spellID = 777,
+  notInterruptible = stub.secret(false) })
+stub.fire("UNIT_SPELLCAST_START", "nameplate1")
+eq(ns.Nameplates:Interruptible(E.guid, 777), nil,
+  "a secret notInterruptible yields nil (unknown), not true")
 
 -- ================================================================== the result
 print(("\n%d passed, %d failed"):format(pass, fail))

@@ -35,14 +35,19 @@ local function readLive(guid)
   if not name then
     name, _, _, _, _, notInterruptible = UnitChannelInfo(token)
   end
-  if not name then return nil end
+  if ns.Plain(name) == nil then return nil end
+  -- In an instance this flag is a secret value: we may hold it but never test
+  -- it. An untestable flag is the same as not knowing, so say so.
+  if ns.IsSecret(notInterruptible) then return nil end
   return not notInterruptible
 end
 
 -- true = interruptible, false = immune, nil = could not tell.
 function Nameplates:Interruptible(guid, spellID)
   local snap = snapshot[guid]
-  if snap and snap.spellID == spellID then return snap.interruptible end
+  -- Comparing secret spellIDs is forbidden; only match when both are plain.
+  spellID = ns.Plain(spellID)
+  if snap and spellID and snap.spellID == spellID then return snap.interruptible end
   local live = readLive(guid)
   if live ~= nil then return live end
   if snap and GetTime() - snap.at < 1 then return snap.interruptible end
@@ -57,7 +62,7 @@ ns.On("NAME_PLATE_UNIT_ADDED", function(unit)
     local ok = readLive(guid)
     if ok ~= nil then
       local _, _, _, _, _, _, _, _, spellID = UnitCastingInfo(unit)
-      snapshot[guid] = { spellID = spellID, interruptible = ok, at = GetTime() }
+      snapshot[guid] = { spellID = ns.Plain(spellID), interruptible = ok, at = GetTime() }
     end
   end
 end)
@@ -78,11 +83,20 @@ local function onCastStart(unit)
     local cName, _, _, _, _, cNotInterruptible, cSpellID = UnitChannelInfo(unit)
     name, notInterruptible, spellID = cName, cNotInterruptible, cSpellID
   end
-  if not name then return end
+  if ns.Plain(name) == nil then return end
+
+  -- nil, not false, when the flag was secret: "could not tell" is the honest
+  -- answer and the panel renders it as unknown rather than as interruptible.
+  -- Note this cannot be written as `cond and nil or x` -- in Lua that always
+  -- falls through to x, which would silently call every cast interruptible.
+  local interruptible
+  if not ns.IsSecret(notInterruptible) then
+    interruptible = not notInterruptible
+  end
 
   snapshot[guid] = {
-    spellID = spellID,
-    interruptible = not notInterruptible,
+    spellID = ns.Plain(spellID),
+    interruptible = interruptible,
     at = GetTime(),
   }
 end

@@ -67,12 +67,60 @@ end
 local handlers = {}
 local frame = CreateFrame("Frame", "UnkickedEventFrame")
 
+-- Events that Midnight (12.0.0) made unregisterable for addons. Calling
+-- RegisterEvent on one of these raises ADDON_ACTION_FORBIDDEN, which taints us
+-- and spams BugGrabber, so we never attempt it -- we record it and degrade.
+local FORBIDDEN = {
+  COMBAT_LOG_EVENT = true,
+  COMBAT_LOG_EVENT_UNFILTERED = true,
+}
+
+ns.blocked = {}
+
 function ns.On(event, fn)
+  if FORBIDDEN[event] then
+    ns.blocked[event] = true
+    return false
+  end
   if not handlers[event] then
     handlers[event] = {}
-    frame:RegisterEvent(event)
+    -- Blizzard can restrict further events without warning; a pcall means a new
+    -- restriction costs us one feature, not the whole addon's load.
+    local ok, err = pcall(frame.RegisterEvent, frame, event)
+    if not ok then
+      handlers[event] = nil
+      ns.blocked[event] = err or true
+      return false
+    end
   end
   table.insert(handlers[event], fn)
+  return true
+end
+
+-- Secret values (12.0.0+) cannot be compared, used as table keys, or boolean
+-- tested by addon code. Anything read about a unit that is not you or your pet
+-- is secret while in an instance, so every such read goes through these.
+local issecret = _G.issecretvalue
+function ns.IsSecret(v)
+  return issecret and issecret(v) or false
+end
+
+-- Returns a value only if it is safe to actually use; nil otherwise.
+function ns.Plain(v)
+  if v == nil or ns.IsSecret(v) then return nil end
+  return v
+end
+
+-- True when the client has addon restrictions in force -- i.e. exactly the
+-- content this addon was built for (dungeon, raid, M+, encounter, rated PvP).
+function ns.Restricted()
+  local R = C_RestrictedActions
+  if not R or not R.IsAddOnRestrictionActive then return false end
+  for _, t in pairs(Enum.AddOnRestrictionType or {}) do
+    local ok, active = pcall(R.IsAddOnRestrictionActive, t)
+    if ok and active then return true end
+  end
+  return false
 end
 
 frame:SetScript("OnEvent", function(_, event, ...)
@@ -93,5 +141,11 @@ ns.On("ADDON_LOADED", function(name)
     if client and ns.DATA_BUILD ~= "" and not ns.DATA_BUILD:find(client, 1, true) then
       ns.staleData = ns.DATA_BUILD
     end
+  end
+
+  if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then
+    ns.Print("|cffff2020cannot track casts on this client.|r "
+      .. "Patch 12.0.0 made COMBAT_LOG_EVENT_UNFILTERED unregisterable for addons. "
+      .. "Type |cffffd200/uk why|r for what that means.")
   end
 end)

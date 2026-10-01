@@ -34,7 +34,34 @@ It reports facts. It does not name a culprit — see R-7.
 | **R-11** | Curated per-dungeon spellID whitelist as the interruptibility fallback for casters that never get a nameplate. | open |
 | **R-12** | Use `LibOpenRaid` addon comms as a ground-truth override for party cooldowns where available, falling back to the inferred model where not. | open |
 | **R-13** | End-of-dungeon summary, persisted per run. | open — only a live per-session summary exists |
-| **R-14** | Test `GetSpellBaseCooldown(spellID)` in-game for a spell the player does not own. If it returns correct data it handles the `RecoveryTime` / `CategoryRecoveryTime` merge itself and the generated base-CD table can shrink to talent data only. | open |
+| **R-14** | Test `GetSpellBaseCooldown(spellID)` in-game for a spell the player does not own. If it returns correct data it handles the `RecoveryTime` / `CategoryRecoveryTime` merge itself and the generated base-CD table can shrink to talent data only. | **void** — cooldown queries are secret under `SecretWhenCooldownsRestricted` (12.0.5) |
+| **R-15** | Never attempt to register an event the client forbids. `COMBAT_LOG_EVENT` and `COMBAT_LOG_EVENT_UNFILTERED` are refused up front; every other registration is wrapped so a future restriction costs one feature, not the addon's load. | done |
+| **R-16** | Every guarded read goes through `ns.Plain` / `ns.IsSecret` and is never compared, arithmetic'd, or boolean-tested directly. A secret reads as **unknown**. | done |
+| **R-17** | State the restriction plainly rather than render an empty panel. `/uk why` reports which events are blocked and whether restrictions are active now. | done |
+
+## ⚠ R-1 … R-10 are not reachable on a 12.x client
+
+Verified 2026-10-01. Patch 12.0.0 ("the addon apocalypse") removed the data this
+addon is built on. The Lua is sound and the model is tested, but **the client will
+not feed it inside the content it was written for**:
+
+| What 12.x took | Consequence |
+|---|---|
+| `COMBAT_LOG_EVENT_UNFILTERED` and `COMBAT_LOG_EVENT` **cannot be registered** — doing so raises `ADDON_ACTION_FORBIDDEN`. | R-1, R-2, R-3, R-8, R-9, R-10 have **no input at all**. Every cast, damage, death and interrupt-spend signal came from here. |
+| `SecretWhenUnitSpellCastRestricted` (12.0.0) — `UnitCastingInfo` / `UnitChannelInfo` / `UNIT_SPELLCAST_*` return **secret values** for any unit that is not the player or their pet. | R-5 cannot work: the enemy `spellID` cannot be compared or used as a table key, and `notInterruptible` cannot be boolean-tested. Every cast reads unknown. |
+| `SecretWhenAurasRestricted` (**12.1.0**) — `UnitAura` is secret during combat, encounters, challenge mode and PvP. | R-6 cannot work: a party member's blocking aura cannot be identified. |
+| `SecretWhenCooldownsRestricted` (12.0.5) — cooldown queries are secret. | R-14 is void; `GetSpellBaseCooldown` cannot stand in for the generated table. |
+| `SecretOnRestrictedMaps` (12.0.5) — restrictions apply on any addon-restricted map: **dungeon, raid, M+, encounter, rated PvP**. | The restrictions cover exactly the content this addon exists for. Open-world is unaffected and useless for the purpose. |
+
+`COMBAT_LOG_MESSAGE` is the sanctioned replacement, but it delivers a
+**preformatted message wrapped in a `|K` string** plus a colour. It can be
+displayed; it cannot be parsed, counted or reasoned about. It does not restore
+any requirement above.
+
+**The log file is untouched.** WoW still writes `WoWCombatLog.txt` with full
+fidelity. Every requirement R-1 through R-10 is satisfiable by an *offline parser*
+of that file — just not live, and not in-game. `ns.Cast:Ingest()` is the entry
+point an offline parser would drive; the test suite already drives it that way.
 
 ## Non-functional
 
@@ -50,6 +77,9 @@ It reports facts. It does not name a culprit — see R-7.
 
 ## Known limits (accepted, not bugs)
 
+- **The 12.x restrictions above are the governing limit.** Everything below this
+  line was written against an 11.x client and describes limits that would apply
+  *if* the data were available.
 - The combat log only reports events near you. A caster across the room may be
   invisible to the addon entirely.
 - Another player's talent loadout cannot be read; inspecting a trait tree returns

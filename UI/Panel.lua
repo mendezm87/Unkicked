@@ -181,7 +181,11 @@ function Panel:Refresh()
   frame.stat:SetText(("%d casts  |cffffd200%s|r%s")
     :format(casts, ns.Short(damage), deaths > 0 and ("  |cffff2020%d deaths|r"):format(deaths) or ""))
 
-  if ns.staleData then
+  if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then
+    -- Be blunt rather than look broken: with no combat log there is no feed,
+    -- so an empty panel is not "a quiet pull", it is "this cannot work".
+    frame.footer:SetText("|cffff2020no combat log in 12.x -- see /uk why|r")
+  elseif ns.staleData then
     frame.footer:SetText(("|cffff9933data built for %s|r"):format(ns.staleData))
   elseif shown == 0 then
     frame.footer:SetText("nothing got through")

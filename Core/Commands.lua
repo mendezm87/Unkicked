@@ -14,6 +14,7 @@ local function usage()
   print("  /uk lock       stop the panel being dragged")
   print("  /uk immune     show casts that were immune to interrupts too")
   print("  /uk min <n>    hide casts under n damage")
+  print("  /uk why        why the addon reports nothing on this client")
 end
 
 SlashCmdList.UNKICKED = function(msg)
@@ -40,6 +41,21 @@ SlashCmdList.UNKICKED = function(msg)
     if ns.staleData then
       ns.Print("|cffff9933you are on a different client build -- regenerate the data files|r")
     end
+
+  elseif cmd == "why" then
+    ns.Print("what this client allows:")
+    if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then
+      print("  |cffff2020COMBAT_LOG_EVENT_UNFILTERED|r -- not registerable since 12.0.0.")
+      print("  Without it there is no cast, damage, death or interrupt feed at all.")
+    end
+    print("  |cffff9933Secret values|r -- in a dungeon, raid, M+ or encounter, anything")
+    print("  read about a unit that is not you or your pet (enemy spell IDs, the")
+    print("  notInterruptible flag, party auras, cooldowns) comes back as a secret")
+    print("  value that addon code may hold but never compare or test.")
+    print("  Restrictions active right now: " ..
+      (ns.Restricted() and "|cffff2020yes|r" or "|cff40c860no|r"))
+    print("  The log file WoW writes to disk is unaffected -- post-run analysis of")
+    print("  WoWCombatLog.txt can still answer every question this panel wanted to.")
 
   elseif cmd == "lock" then
     ns.db.locked = not ns.db.locked
