@@ -111,6 +111,17 @@ function ns.Plain(v)
   return v
 end
 
+-- A GUID is the one thing we only ever use as a table key, and UnitGUID returns
+-- a secret for any unit that is not the player or their pet on a restricted map
+-- (12.0.0+). Indexing a table with a secret is a hard error, not a nil read, so
+-- every live GUID is resolved through here and an unusable one means "no unit".
+function ns.GUID(unit)
+  if not unit then return nil end
+  local ok, guid = pcall(UnitGUID, unit)
+  if not ok then return nil end
+  return ns.Plain(guid)
+end
+
 -- True when the client has addon restrictions in force -- i.e. exactly the
 -- content this addon was built for (dungeon, raid, M+, encounter, rated PvP).
 function ns.Restricted()

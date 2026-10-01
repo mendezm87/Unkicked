@@ -21,8 +21,10 @@ local tokenByGUID = {}
 local snapshot = {}     -- guid -> { spellID, interruptible, at }
 
 function Nameplates:TokenFor(guid)
+  guid = ns.Plain(guid)
+  if not guid then return nil end
   local token = tokenByGUID[guid]
-  if token and UnitGUID(token) == guid then return token end
+  if token and ns.GUID(token) == guid then return token end
   tokenByGUID[guid] = nil
   return nil
 end
@@ -44,6 +46,8 @@ end
 
 -- true = interruptible, false = immune, nil = could not tell.
 function Nameplates:Interruptible(guid, spellID)
+  guid = ns.Plain(guid)
+  if not guid then return nil end
   local snap = snapshot[guid]
   -- Comparing secret spellIDs is forbidden; only match when both are plain.
   spellID = ns.Plain(spellID)
@@ -55,7 +59,9 @@ function Nameplates:Interruptible(guid, spellID)
 end
 
 ns.On("NAME_PLATE_UNIT_ADDED", function(unit)
-  local guid = UnitGUID(unit)
+  -- nil here means the client gave us a secret GUID, i.e. we are on a restricted
+  -- map. Nothing in this module can work from that, so it stays empty.
+  local guid = ns.GUID(unit)
   if guid then
     tokenByGUID[guid] = unit
     -- The nameplate may appear mid-cast; grab what we can right now.
@@ -68,13 +74,13 @@ ns.On("NAME_PLATE_UNIT_ADDED", function(unit)
 end)
 
 ns.On("NAME_PLATE_UNIT_REMOVED", function(unit)
-  local guid = UnitGUID(unit)
+  local guid = ns.GUID(unit)
   if guid then tokenByGUID[guid] = nil end
 end)
 
 local function onCastStart(unit)
   if not unit or not unit:find("nameplate", 1, true) then return end
-  local guid = UnitGUID(unit)
+  local guid = ns.GUID(unit)
   if not guid then return end
   tokenByGUID[guid] = unit
 

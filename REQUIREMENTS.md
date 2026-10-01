@@ -45,6 +45,7 @@ It reports facts. It does not name a culprit — see R-7.
 | **R-15** | Never attempt to register an event the client forbids. `COMBAT_LOG_EVENT` and `COMBAT_LOG_EVENT_UNFILTERED` are refused up front; every other registration is wrapped so a future restriction costs one feature, not the addon's load. | done |
 | **R-16** | Every guarded read goes through `ns.Plain` / `ns.IsSecret` and is never compared, arithmetic'd, or boolean-tested directly. A secret reads as **unknown**. | done |
 | **R-17** | State the restriction plainly rather than render an empty panel. `/uk why` reports which events are blocked and whether restrictions are active now. | done |
+| **R-18** | Resolve every live `UnitGUID` through `ns.GUID`, which returns nil for a secret. A GUID is only ever used as a table key and indexing a table with a secret is a hard error, not a nil read, so an unusable GUID must mean "no unit" rather than reaching a `t[guid] = v`. | done |
 
 ## ⚠ R-1 … R-10 are not reachable on a 12.x client
 

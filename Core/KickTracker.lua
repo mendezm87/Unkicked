@@ -104,7 +104,7 @@ function Kick:Rebuild()
   end
 
   for _, unit in ipairs(units) do
-    local guid = UnitGUID(unit)
+    local guid = ns.GUID(unit)
     if guid then
       seen[guid] = true
       local p = players[guid] or {}

@@ -338,6 +338,31 @@ stub.fire("UNIT_SPELLCAST_START", "nameplate1")
 eq(ns.Nameplates:Interruptible(E.guid, 777), nil,
   "a secret notInterruptible yields nil (unknown), not true")
 
+print("\n[R-18] a secret GUID is never used as a table key")
+loadAddon(); freshParty()
+-- The real 12.x client returns a secret string from UnitGUID for any nameplate
+-- on a restricted map. Indexing with it is a hard error, so the module must drop
+-- the unit rather than store it.
+stub.nameplates["nameplate1"] = stub.secret(E.guid)
+stub.setCasting("nameplate1", { name = "Big Bolt", spellID = 777, notInterruptible = false })
+ok(pcall(stub.fire, "NAME_PLATE_UNIT_ADDED", "nameplate1"),
+  "NAME_PLATE_UNIT_ADDED survives a secret GUID")
+ok(pcall(stub.fire, "UNIT_SPELLCAST_START", "nameplate1"),
+  "UNIT_SPELLCAST_START survives a secret GUID")
+ok(pcall(stub.fire, "NAME_PLATE_UNIT_REMOVED", "nameplate1"),
+  "NAME_PLATE_UNIT_REMOVED survives a secret GUID")
+eq(ns.Nameplates:Interruptible(stub.secret(E.guid), 777), nil,
+  "a secret GUID reads as unknown rather than erroring")
+eq(ns.GUID("nameplate1"), nil, "ns.GUID refuses a secret GUID")
+stub.nameplates["nameplate1"] = nil
+
+-- Same hazard on the party side: the roster scan keys players by GUID.
+stub.units.party1 = { guid = stub.secret(DK.guid), name = DK.name, class = DK.class }
+ok(pcall(function() ns.Kick:Rebuild() end),
+  "roster rebuild survives a secret party GUID")
+eq(ns.Kick.players[DK.guid], nil,
+  "a player whose GUID is unusable is dropped, not keyed by a secret")
+
 -- ============================================================ the offline path
 -- parser/host.lua defines the same client globals this file stubs, so the offline
 -- suite runs in its own process rather than fighting over them. Same interpreter,
