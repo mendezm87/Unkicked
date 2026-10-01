@@ -1,8 +1,14 @@
 #!/usr/bin/env node
-// Block-balance check for the addon's Lua. This is NOT a parser -- it tokenizes
-// past strings, long strings and comments and verifies that every block opener
-// has a matching `end`, which catches the scaffolding mistakes. A real parse
-// needs an actual Lua binary. The real suite is tests/run.lua (N-5).
+// Syntax check for the addon's Lua, in TOC load order.
+//
+// When a Lua binary is available it compiles each file for real, which is the only
+// trustworthy answer. Otherwise it falls back to a block-balance tokenizer -- useful
+// for catching scaffolding mistakes, but it reports false positives on code the
+// real compiler accepts (it mis-reads `function` as a block opener in expression
+// position, among others), so the fallback is advisory only.
+//
+// The behavioural suite is tests/run.lua (N-5).
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
@@ -15,6 +21,37 @@ const files = fs.readFileSync(path.join(ROOT, "Unkicked.toc"), "utf8")
 
 const OPEN = /^(function|if|for|while|do)$/;
 let bad = 0;
+
+// Prefer a real compile. luajit first: WoW runs Lua 5.1.
+function findLua() {
+  for (const bin of ["luajit", "lua5.1", "lua"]) {
+    try {
+      execFileSync(bin, ["-v"], { stdio: "ignore" });
+      return bin;
+    } catch {}
+  }
+  return null;
+}
+const lua = findLua();
+if (lua) {
+  for (const rel of files) {
+    const file = path.join(ROOT, rel);
+    if (!fs.existsSync(file)) { console.error(`MISSING ${rel}`); bad++; continue; }
+    try {
+      execFileSync(lua, ["-e", `assert(loadfile(${JSON.stringify(file)}))`], { stdio: "pipe" });
+      console.log(`ok  ${rel}`);
+    } catch (e) {
+      console.error(`${rel}: ${String(e.stderr || e.message).trim()}`);
+      bad++;
+    }
+  }
+  console.log(bad === 0
+    ? `\n${files.length} files compile under ${lua}`
+    : `\n${bad} file(s) failed to compile`);
+  process.exit(bad === 0 ? 0 : 1);
+}
+
+console.error("no lua binary found -- falling back to the advisory block check\n");
 
 for (const rel of files) {
   const file = path.join(ROOT, rel);

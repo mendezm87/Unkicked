@@ -53,6 +53,46 @@ local function bind(p, spellID)
   p.eligible = info.eligible
 end
 
+-- Offline only. A combat log's COMBATANT_INFO states a player's spec id and the
+-- trait node entries they actually selected -- both unreadable in game on 12.x,
+-- where inspecting a loadout returns configID -1. When we have them the cooldown
+-- stops being an inference: we know which interrupt they have and whether they
+-- took the one talent that shortens it, so the learning rule below is skipped.
+--
+-- `entries` may be an empty table, which is itself an answer ("they did not take
+-- it") and still sets p.exact. Pass nil to mean "no talent information".
+function Kick:SetKnown(guid, specID, entries, name)
+  local p = players[guid]
+  if not p then p = {}; players[guid] = p end
+  if name then p.name = name end
+
+  local spec = specID and ns.SPEC_INTERRUPT and ns.SPEC_INTERRUPT[specID]
+  if spec then
+    p.class = spec.class
+    p.spec = spec.spec
+    bind(p, spec.spellID)
+  end
+
+  if not entries or not p.spellID then return p end
+
+  local base = ns.INTERRUPTS[p.spellID].baseMs
+  p.connectMs, p.whiffMs, p.talent = nil, nil, nil
+  for _, entryID in ipairs(entries) do
+    local t = ns.TRAIT_CD and ns.TRAIT_CD[entryID]
+    if t and t.spellID == p.spellID then
+      local after = t.pctReduction and (base * (1 - t.pctReduction / 100))
+                                    or (base - (t.flatReductionMs or 0))
+      p.talent = t.name
+      -- A conditional (proc-triggered) reduction only pays out on a successful
+      -- interrupt, which is exactly the split the two-bucket model already has.
+      p.connectMs = after
+      p.whiffMs = t.conditional and base or after
+    end
+  end
+  p.exact = true
+  return p
+end
+
 function Kick:Rebuild()
   local seen = {}
   local n = GetNumGroupMembers()
@@ -110,8 +150,10 @@ function Kick:OnSpend(guid, spellID, now)
   if p.spellID ~= spellID then return end
 
   -- Measure the interval the PREVIOUS spend actually took, and file it under
-  -- whether that previous spend connected.
-  if p.lastSpendAt then
+  -- whether that previous spend connected. Skipped when the cooldown is already
+  -- known exactly from a log's talent list -- there is nothing left to learn, and
+  -- a mis-measured gap could only make a known-correct number worse.
+  if p.lastSpendAt and not p.exact then
     local observedMs = (now - p.lastSpendAt) * 1000
     local bucket = p.lastSpendConnected and "connectMs" or "whiffMs"
     local shorter = observedMs < (p.baseMs - ns.CD_EPSILON_MS)

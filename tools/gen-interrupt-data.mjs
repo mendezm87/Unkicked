@@ -75,7 +75,8 @@ async function main() {
   console.error(`[unkicked] build ${build}`);
 
   const [cooldowns, categories, classOptions, labels, effects, spellNames,
-         skillLine, slxTree, nodes, nodeXEntry, nodeEntries, definitions] =
+         skillLine, slxTree, nodes, nodeXEntry, nodeEntries, definitions,
+         specs, classes] =
     await Promise.all([
       db.table("SpellCooldowns"), db.table("SpellCategories"),
       db.table("SpellClassOptions"), db.table("SpellLabel"),
@@ -83,6 +84,7 @@ async function main() {
       db.table("SkillLine"), db.table("SkillLineXTraitTree"),
       db.table("TraitNode"), db.table("TraitNodeXTraitNodeEntry"),
       db.table("TraitNodeEntry"), db.table("TraitDefinition"),
+      db.table("ChrSpecialization"), db.table("ChrClasses"),
     ]);
 
   const nameOf = new Map(spellNames.map((r) => [num(r.ID), r.Name_lang]));
@@ -143,8 +145,11 @@ async function main() {
     entriesByNode.get(n).push(num(r.TraitNodeEntryID));
   }
 
-  // talent spells per tree
+  // talent spells per tree, and the node ENTRY ids each talent spell sits behind.
+  // The entry id is what a combat log's COMBATANT_INFO reports, so it is the only
+  // thing that can answer "did this player actually take that talent" offline.
   const spellsByTree = new Map();
+  const entriesBySpell = new Map();
   for (const n of nodes) {
     const tree = num(n.TraitTreeID);
     if (!spellsByTree.has(tree)) spellsByTree.set(tree, new Set());
@@ -154,7 +159,10 @@ async function main() {
       const d = defById.get(num(e.TraitDefinitionID));
       if (!d) continue;
       const sp = num(d.SpellID);
-      if (sp) spellsByTree.get(tree).add(sp);
+      if (!sp) continue;
+      spellsByTree.get(tree).add(sp);
+      if (!entriesBySpell.has(sp)) entriesBySpell.set(sp, new Set());
+      entriesBySpell.get(sp).add(eid);
     }
   }
 
@@ -224,6 +232,7 @@ async function main() {
           if (pts >= 0) continue; // downward-only: a talent that lengthens a CD is not a thing we model
           reductions.push({
             talent, talentName: nameOf.get(talent) || `spell:${talent}`,
+            entryIDs: [...(entriesBySpell.get(talent) || [])].sort((a, b) => a - b),
             via: sp === talent ? null : sp,
             how, pct, amount: Math.abs(pts), effect: num(e.Effect), aura,
           });
@@ -243,8 +252,27 @@ async function main() {
     uniq.forEach((r) => evidence.push({ interrupt: ix.name, ...r }));
   }
 
+  // --- spec -> interrupt ----------------------------------------------------
+  // In game we cannot tell a Survival hunter from a Marksmanship one without
+  // inspecting, so an ambiguous class stays unbound. A combat log's
+  // COMBATANT_INFO states the spec id outright, which resolves every one of them.
+  const classFileById = new Map(classes.map((r) => [num(r.ID), r.Filename]));
+  const specRows = specs
+    .filter((r) => num(r.ClassID) > 0)
+    .map((r) => ({ id: num(r.ID), name: r.Name_lang, cls: classFileById.get(num(r.ClassID)) }));
+
+  const specInterrupt = [];
+  for (const r of results) {
+    for (const specName of r.specs) {
+      const hit = specRows.find((s) => s.cls === r.class && s.name === specName);
+      if (!hit) throw new Error(`${r.class} spec "${specName}" not found in ChrSpecialization`);
+      specInterrupt.push({ specID: hit.id, class: r.class, spec: specName, spellID: r.id });
+    }
+  }
+  specInterrupt.sort((a, b) => a.specID - b.specID);
+
   // --- emit -----------------------------------------------------------------
-  const lua = renderLua(build, results);
+  const lua = renderLua(build, results, specInterrupt);
   const out = path.join(ROOT, "Data", "InterruptData.lua");
   fs.writeFileSync(out, lua);
   console.error(`[unkicked] wrote ${path.relative(ROOT, out)} (${results.length} interrupts, ${evidence.length} talent matches)`);
@@ -265,7 +293,7 @@ async function main() {
   }
 }
 
-function renderLua(build, results) {
+function renderLua(build, results, specInterrupt) {
   const L = [];
   L.push("-- Unkicked :: InterruptData.lua");
   L.push("-- GENERATED FILE -- do not edit by hand.");
@@ -308,6 +336,30 @@ function renderLua(build, results) {
   L.push("-- Reverse index: spellID lookup is the hot path in the combat-log handler.");
   L.push("ns.IS_INTERRUPT = {}");
   L.push("for id in pairs(ns.INTERRUPTS) do ns.IS_INTERRUPT[id] = true end");
+  L.push("");
+  L.push("-- specID -> the interrupt that spec has. Unusable in game (you cannot read");
+  L.push("-- another player's spec on 12.x) but exact offline: COMBATANT_INFO states it.");
+  L.push("ns.SPEC_INTERRUPT = {");
+  for (const s of specInterrupt) {
+    L.push(`  [${s.specID}] = { class = "${s.class}", spec = ${JSON.stringify(s.spec)}, spellID = ${s.spellID} },`);
+  }
+  L.push("}");
+  L.push("");
+  L.push("-- traitNodeEntryID -> the interrupt cooldown reduction that entry grants.");
+  L.push("-- COMBATANT_INFO lists the entry ids a player actually selected, so offline");
+  L.push("-- this turns the talent GATE (R-3) into a talent FACT: no learning needed.");
+  L.push("-- conditional = the reduction came from a proc-triggered spell, so it only");
+  L.push("--   applies on a successful interrupt (Coldthirst). false = always applies.");
+  L.push("ns.TRAIT_CD = {");
+  for (const r of results) {
+    for (const d of r.reductions) {
+      const amt = d.pct ? `pctReduction = ${d.amount}` : `flatReductionMs = ${d.amount}`;
+      for (const eid of d.entryIDs || []) {
+        L.push(`  [${eid}] = { spellID = ${r.id}, talentID = ${d.talent}, name = ${JSON.stringify(d.talentName)}, ${amt}, conditional = ${d.via ? "true" : "false"} },`);
+      }
+    }
+  }
+  L.push("}");
   L.push("");
   return L.join("\n");
 }

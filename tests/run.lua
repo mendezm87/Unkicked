@@ -338,6 +338,16 @@ stub.fire("UNIT_SPELLCAST_START", "nameplate1")
 eq(ns.Nameplates:Interruptible(E.guid, 777), nil,
   "a secret notInterruptible yields nil (unknown), not true")
 
+-- ============================================================ the offline path
+-- parser/host.lua defines the same client globals this file stubs, so the offline
+-- suite runs in its own process rather than fighting over them. Same interpreter,
+-- so `luajit tests/run.lua` covers everything.
+print("\n[parser] handing off to tests/parser.lua")
+local interp = arg[-1] or "luajit"
+local okParser = os.execute(("%s tests/parser.lua"):format(interp))
+okParser = (okParser == true or okParser == 0)
+
 -- ================================================================== the result
-print(("\n%d passed, %d failed"):format(pass, fail))
-os.exit(fail == 0 and 0 or 1)
+print(("\n%d passed, %d failed  (model)"):format(pass, fail))
+if not okParser then print("the offline parser suite FAILED -- see above") end
+os.exit((fail == 0 and okParser) and 0 or 1)

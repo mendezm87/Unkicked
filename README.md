@@ -1,28 +1,91 @@
 # Unkicked
 
-An in-game panel that lists the enemy casts **nobody stopped** — what they cost in
-damage, whether anyone died to them, and which party members had an interrupt
-available when each cast began.
+Lists the enemy casts **nobody stopped** — what they cost in damage, whether anyone
+died to them, and which party members had an interrupt available when each cast
+began. One report per pull.
 
 Built for 5-player content on retail (Midnight, patch 12.1, Season 2).
 
 ```
-Unkicked                              4 casts  118k  1 deaths
-* Mind Sear                      62k   Grimm Thrack
-  Lightning Bolt                 31k   Grimm
-? Shadow Word: Pain              18k   ?
-  Fireball                        7k   all down
+== pull 7  Tideburn Warlord -- kill  2:14  2 unkicked (1.9m dmg)
+  0:41  Tidal Bolt                       1.2m  KILLED Rek-Illidan (1.2m)
+        up: Frosty-Illidan, Rek-Illidan  down: Mystia-Illidan  cc: Pand-Illidan
+  1:52  Hex Bolt                         640k
+        up: Frosty-Illidan, Mystia-Illidan, Pand-Illidan, Rek-Illidan
+  -- 1 cast of unknown interruptibility (not yet proven kickable) --
+  1:58  Crushing Tide                    310k
 ```
 
-`*` contributed to a death · `?` interruptibility could not be determined
+> **Read this first: it is not an in-game panel.** Patch 12.0.0 made
+> `COMBAT_LOG_EVENT_UNFILTERED` unregisterable by addons and turned every fallback
+> read — enemy spell id, `notInterruptible`, party auras, cooldown queries — into a
+> *secret value* on dungeon and raid maps. There is no way to compute this inside
+> the game any more, and the addon part of this repo says so rather than showing an
+> empty frame. What still works is the log file the client writes, so Unkicked is a
+> **parser that tails `WoWCombatLog.txt` and reports each pull a few seconds after
+> it ends**, in a terminal beside the game. See `REQUIREMENTS.md` for the full list
+> of what 12.x removed.
 
 ---
 
-## Why an addon and not Warcraft Logs
+## Running it
 
-An addon cannot read Warcraft Logs — but it can read the same raw feed WCL is
-built from, live, via `COMBAT_LOG_EVENT_UNFILTERED`. That is better for this
-purpose: you want the information during the pull, not after it.
+You need a Lua interpreter — nothing else. No libraries, no build step.
+
+**Windows (the gaming PC):** install one, once:
+
+```powershell
+winget install DEVCOM.Lua      # or: scoop install luajit
+```
+
+Turn logging on in game — `/combatlog` (and advanced combat logging in
+Options → Network), then:
+
+```powershell
+cd path\to\Unkicked
+lua parser\unkicked.lua --follow --model
+```
+
+**macOS / Linux:**
+
+```sh
+brew install luajit                    # if you do not have it
+luajit parser/unkicked.lua --follow --model
+```
+
+With no file argument it looks for `WoWCombatLog.txt` in the usual
+`_retail_/Logs` locations; pass a path to read a log you already have.
+
+| Option | What it does |
+|---|---|
+| `--follow`, `-f` | watch a live log, report each pull as it ends |
+| `--from-start` | with `--follow`, replay what is already in the file first |
+| `--quiet-gap N` | seconds of calm that end a trash pull (default 5) |
+| `--min-damage N` | hide chip-damage casts |
+| `--model` | append what is believed about each party member's interrupt, and where that number came from |
+| `--json` | one JSON object per pull on stdout, for an overlay or a second monitor |
+| `--knowledge PATH` | the interruptibility knowledge file (see below) |
+
+## What the log can do that the addon never could
+
+Two things improve offline, because a combat log states what the client refuses to
+tell an addon:
+
+- **Which interrupt each party member actually has.** `COMBATANT_INFO` carries the
+  spec id, so Survival vs. Marksmanship hunter and Feral vs. Balance druid are
+  resolved instead of left unbound.
+- **Whether they took the cooldown-reduction talent.** It also lists the trait node
+  entries they selected. Inspecting a loadout in game returns configID `-1`; here
+  Coldthirst is simply a fact, so a Frost DK's Mind Freeze is modelled at 12s after
+  a connect and 15s after a whiff — no inference, no learning.
+
+What gets *worse* offline is interruptibility: the log carries no
+`notInterruptible` flag. So a cast is called interruptible only once a
+`SPELL_INTERRUPT` has been seen stopping that spell, at which point it is recorded
+in `parser/learned-interruptible.lua` and stays known for every future run. Until
+then it is reported in a separate **unknown** section — never silently counted as a
+missed kick. That file is plain Lua and safe to edit; add `[spellID] = false` to
+mark a cast you know cannot be interrupted and it will be filtered out.
 
 ## What it reports, and what it refuses to report
 
@@ -98,16 +161,28 @@ The model runs headless against a stubbed client, so the learning rule, the CC
 handling and the damage/death attribution are tested without launching the game:
 
 ```sh
-luajit tests/run.lua        # 67 assertions
+luajit tests/run.lua        # 130 assertions (model + offline parser)
+luajit tests/parser.lua     # the offline half on its own
 node tools/check-lua.mjs    # block-balance check across the TOC load order
 ```
 
-`luajit` is used rather than `lua` because WoW runs Lua 5.1.
+`tests/run.lua` hands off to `tests/parser.lua` in a second process, because the
+headless host and the test stub define the same client globals. `luajit` is used
+rather than `lua` because WoW runs Lua 5.1.
 
-## Commands
+The parser suite replays `tests/fixtures/sample-combatlog.txt`, a synthetic log with
+a trash pack and a boss pull in it. It includes a control: strip the Coldthirst
+entry out of that log and the same cast reports the Death Knight as *down* instead
+of *up*, which is how we know the talent read is doing something.
+
+## In-game commands
+
+These exist, but on a 12.x client the addon has no input: it loads, refuses the
+forbidden events, and says so. `/uk why` prints what is blocked and why.
 
 | | |
 |---|---|
+| `/uk why` | which events are blocked, and whether restrictions are active now |
 | `/uk` | toggle the panel |
 | `/uk clear` | drop the current list |
 | `/uk model` | what the addon believes about each party interrupt right now |
@@ -118,16 +193,26 @@ node tools/check-lua.mjs    # block-balance check across the TOC load order
 
 ## Install
 
-Copy the folder to `World of Warcraft/_retail_/Interface/AddOns/Unkicked`.
-No library dependencies.
+The parser needs no install — clone or unzip anywhere and run it (see
+**Running it** above).
+
+The addon half still installs the normal way, to
+`World of Warcraft/_retail_/Interface/AddOns/Unkicked`, with no library
+dependencies — but on 12.x all it can do is explain why it cannot work. The useful
+reason to have it there is that the folder is also the repo, so one copy serves
+both.
 
 ## Known limits
 
 - The combat log only reports events near you; a caster across the room can be
   invisible to the addon entirely.
-- Interruptibility comes from `UnitCastingInfo` on **nameplate** units, because the
-  combat log carries no interruptible flag. A caster with no nameplate yields
-  *unknown* rather than an assumption.
+- The combat log carries no interruptible flag, so a cast is *unknown* until a
+  `SPELL_INTERRUPT` has been seen stopping that spell at least once. Unknowns are
+  reported separately, never as missed kicks.
+- A pull's report arrives a few seconds after it ends, because silence is the only
+  signal that a trash pack is over. Boss pulls are exact — the log brackets them.
+- The report lands outside the game. Nothing can push it back into the WoW UI; that
+  would need an addon acting on combat data, which is what 12.0 removed.
 - Party-member position is unavailable, so being out of range cannot be told apart
   from not pressing the button.
 - Designed for 5-player content. In a 20-player raid the availability model becomes

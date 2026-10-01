@@ -1,3 +1,6 @@
 tools/.cache/
 *.zip
 .DS_Store
+
+# grown per-machine from the logs you parse; see P-4 in REQUIREMENTS.md
+parser/learned-interruptible.lua
