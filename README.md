@@ -87,6 +87,12 @@ then it is reported in a separate **unknown** section — never silently counted
 missed kick. That file is plain Lua and safe to edit; add `[spellID] = false` to
 mark a cast you know cannot be interrupted and it will be filtered out.
 
+That file is **committed as a seed**, not gitignored, so a fresh clone starts with
+the spells already proven here rather than learning from zero — a blank file makes
+the first run or two under-report. It grows additively on every parse, and your
+own entries survive `git pull` unless you edited a line that also changed
+upstream.
+
 ## What it reports, and what it refuses to report
 
 It reports facts. It does **not** print a verdict.

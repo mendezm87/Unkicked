@@ -2,5 +2,6 @@ tools/.cache/
 *.zip
 .DS_Store
 
-# grown per-machine from the logs you parse; see P-4 in REQUIREMENTS.md
-parser/learned-interruptible.lua
+# parser/learned-interruptible.lua is deliberately TRACKED, not ignored: it ships
+# as a seed so a fresh clone reports on its first run instead of learning from
+# zero. See P-4 in REQUIREMENTS.md.
