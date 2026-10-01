@@ -8,21 +8,45 @@
 --
 -- Two details that will bite anyone reading this later:
 --
---  * ADVANCED COMBAT LOGGING inserts a fixed block of 17 unit fields between the
---    spell params and the suffix params, so the damage amount is NOT at a fixed
---    offset across logs. The header line states whether advanced logging is on,
---    and `amount` is validated as numeric before being used; if the pick is wrong
---    the line is skipped and counted rather than silently producing a 0.
+--  * ADVANCED COMBAT LOGGING inserts a block of unit fields between the spell
+--    params and the suffix params, so the damage amount is NOT at a fixed offset
+--    across logs. Counting those fields by hand is how this went wrong once
+--    already: a count of 17 landed on `facing`, which is numeric, so the amount
+--    check passed and every damage event silently scored a heading in radians.
+--    The block is now SELF-LOCATING -- see M.advancedSuffix -- and the count
+--    below is only a fallback.
 --
 --  * COMBATANT_INFO nests parens and brackets, so splitting on commas requires
 --    tracking depth as well as quotes.
 
 local M = {}
 
--- 17 advanced-logging unit fields: infoGUID, ownerGUID, currentHP, maxHP,
--- attackPower, spellPower, armor, absorb, powerType, currentPower, maxPower,
--- powerCost, positionX, positionY, uiMapID, facing, level.
-M.ADVANCED_FIELDS = 17
+-- Advanced-logging unit fields, as actually written by retail build 12.1.0
+-- (COMBAT_LOG_VERSION 22), verified against a real WoWCombatLog.txt:
+--   infoGUID, ownerGUID, currentHP, maxHP, attackPower, spellPower, armor,
+--   absorb, powerType, currentPower, maxPower, powerCost, <2 unnamed>,
+--   positionX, positionY, uiMapID, facing, level
+-- That is 19, not the 17 the layout is usually documented as. Treat this as a
+-- fallback only; M.advancedSuffix finds the real boundary.
+M.ADVANCED_FIELDS = 19
+
+-- The block always ENDS with positionX, positionY, uiMapID, facing, level.
+-- positionX/Y and facing carry a decimal point; uiMapID and level never do, and
+-- nothing earlier in the block is fractional. Anchoring on that five-field shape
+-- means a future patch inserting another unit field cannot shift the amount.
+local function isFrac(v) return type(v) == "string" and v:match("^%-?%d+%.%d+$") ~= nil end
+local function isInt(v)  return type(v) == "string" and v:match("^%-?%d+$") ~= nil end
+
+-- Returns the index of the first suffix field, or nil if the shape is not found.
+function M.advancedSuffix(f, from)
+  for i = from, math.min(from + M.ADVANCED_FIELDS + 4, #f) do
+    if isFrac(f[i]) and isFrac(f[i + 1]) and isInt(f[i + 2])
+       and isFrac(f[i + 3]) and isInt(f[i + 4]) then
+      return i + 5
+    end
+  end
+  return nil
+end
 
 -- ------------------------------------------------------------------ splitting
 -- Returns an array of fields. Quotes are stripped; bracketed groups are kept
@@ -123,14 +147,17 @@ function M.normalize(ts, f, adv)
   args.n = 7 + shape.spell
 
   local suffix = at + shape.spell
-  if adv and shape.advanced then suffix = suffix + M.ADVANCED_FIELDS end
+  if adv and shape.advanced then
+    suffix = M.advancedSuffix(f, suffix) or (suffix + M.ADVANCED_FIELDS)
+  end
 
   if event == "SPELL_DAMAGE" or event == "SPELL_PERIODIC_DAMAGE" then
-    -- amount is the first suffix field. If the advanced-block guess is wrong this
-    -- is a name or a hex flag rather than a number, so the line is rejected
-    -- loudly instead of silently contributing zero damage.
+    -- amount is the first suffix field. Damage amounts are always whole numbers,
+    -- so a fractional value means the advanced block was mis-measured and we are
+    -- looking at a coordinate or a heading -- reject rather than score it.
     local amount = tonumber(f[suffix])
     if not amount then return nil, "damage amount not numeric" end
+    if amount % 1 ~= 0 then return nil, "damage amount fractional -- advanced offset wrong" end
     args[11] = amount                        -- handler reads it as the 4th spell slot
     args.n = 11
   elseif event == "SPELL_INTERRUPT" then

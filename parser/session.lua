@@ -151,6 +151,12 @@ end
 
 -- --------------------------------------------------------------------- feeding
 function Session:line(line)
+  -- WoW writes WoWCombatLog.txt with CRLF endings on Windows. Reading it on any
+  -- platform leaves a trailing \r on the LAST field of every line, which quietly
+  -- corrupts the fields we read from the end -- notably SPELL_AURA_APPLIED's
+  -- auraType, i.e. the whole CC model. Strip it once, here, rather than at each
+  -- comparison site.
+  line = line:gsub("[\r\n]+$", "")
   local ts, rest = logline.timestamp(line)
   if not ts then return end
   self.lines = self.lines + 1

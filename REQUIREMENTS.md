@@ -88,7 +88,9 @@ The replacement for the in-game panel. Same model, different feed.
 | **P-6** | When the talent is known from the log, skip the R-3 learning rule entirely — there is nothing left to infer and a mis-measured gap could only make a known-correct number worse. | done |
 | **P-7** | Cold start (R-10) applies to the start of the **log**, not of every pull. A log is continuous, so after the opening seconds, not having seen a spend is itself evidence the interrupt is up. | done |
 | **P-8** | `--json`, one object per pull on stdout, for feeding an overlay or a second monitor. Name lists are sorted so two reports of the same pull are diffable. | done |
-| **P-9** | Advanced combat logging inserts 17 unit fields between the spell params and the suffix, so the damage amount is not at a fixed offset. Read the header's `ADVANCED_LOG_ENABLED`, and **reject** a line whose amount does not parse as a number rather than silently scoring zero damage. | done |
+| **P-9** | Advanced combat logging inserts unit fields between the spell params and the suffix, so the damage amount is not at a fixed offset. **Locate the boundary by shape, not by count**: the block always ends `positionX, positionY, uiMapID, facing, level`, and only those three are fractional. Reject a line whose amount is non-numeric *or fractional*. | done — **verified against a real log** |
+| **P-11** | A counted offset of 17 was wrong: retail build 12.1.0 (`COMBAT_LOG_VERSION 22`) writes **19** unit fields. 17 landed on `facing`, which is numeric, so the "is it a number" guard passed and every damage event scored a heading in radians. Hence P-9's shape anchor and the fractional check. | done |
+| **P-12** | `WoWCombatLog.txt` is written with CRLF endings, which leaves a trailing `\r` on the last field of every line — corrupting any field read from the end, notably `SPELL_AURA_APPLIED`'s `auraType` and therefore the whole CC model. Strip it once in `Session:line`. | done |
 | **P-10** | Aggregate a whole run (per-player totals, worst casts, repeat offenders) rather than only per-pull reports. | open — this is R-13 for the offline path |
 
 ## Non-functional

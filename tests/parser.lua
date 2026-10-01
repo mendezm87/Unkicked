@@ -53,13 +53,30 @@ eq(g[4], "(1,2,3)", "a paren group is one field")
 eq(g[6], "[a,b,[c,d]]", "nesting is tracked, not just matched")
 
 print("\n[parser] advanced logging moves the damage amount, and a bad guess is refused")
-local ADV = ("x,"):rep(17):sub(1, -2)
+-- This block is copied field-for-field from a real retail log (build 12.1.0,
+-- COMBAT_LOG_VERSION 22). It is 19 fields, not the 17 the layout is usually
+-- documented as, and it ends on the posX, posY, uiMapID, facing, level shape
+-- that M.advancedSuffix anchors to.
+local ADV = "Player-1,0000000000000000,1387024,1400670,0,0,1470,0,0,0,1,0,0,0,4443.13,-453.19,2574,1.8436,90"
 local dmg = ('SPELL_DAMAGE,Creature-0-1,"Mystic",0xa48,0x0,Player-1,"Rek",0x511,0x0,400001,"Tidal Bolt",8,%s,1250000,1250000,0,8,0,0,0,nil,nil,nil')
   :format(ADV)
 local a = logline.normalize(1000, logline.split(dmg), true)
-eq(a and a[11], 1250000, "with advanced logging on, amount is read past the 17 unit fields")
+eq(a and a[11], 1250000, "the amount is found past a real 19-field advanced block")
+
+-- A block with one MORE unit field than we know about must still resolve, because
+-- the boundary is located by shape rather than counted. This is the regression
+-- that a hand-counted 17 could not survive.
+local wider = ('SPELL_DAMAGE,Creature-0-1,"Mystic",0xa48,0x0,Player-1,"Rek",0x511,0x0,400001,"Tidal Bolt",8,Player-1,0000000000000000,1387024,1400670,0,0,1470,0,0,0,1,0,0,0,7,4443.13,-453.19,2574,1.8436,90,1250000,1250000,0,8,0,0,0,nil,nil,nil')
+local b = logline.normalize(1000, logline.split(wider), true)
+eq(b and b[11], 1250000, "an extra unit field does not shift the amount")
+
+-- The original bug: a mis-measured block lands on `facing`, which IS numeric, so
+-- "is it a number" was not a sufficient guard. Amounts are always whole.
+local badfrac = logline.normalize(1000, logline.split(
+  ('SPELL_DAMAGE,Creature-0-1,"Mystic",0xa48,0x0,Player-1,"Rek",0x511,0x0,400001,"Tidal Bolt",8,%s'):format(ADV)), true)
+eq(badfrac, nil, "a block with no suffix at all is refused, not scored")
 local wrong, why = logline.normalize(1000, logline.split(dmg), false)
-eq(wrong, nil, "with the wrong offset the line is refused")
+eq(wrong, nil, "with advanced logging wrongly assumed off, the line is refused")
 has(why, "numeric", "and says why, rather than silently scoring 0 damage")
 
 print("\n[parser] COMBATANT_INFO is anchored on the talent list, not on a stat count")
