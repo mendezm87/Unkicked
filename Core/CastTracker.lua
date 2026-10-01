@@ -128,19 +128,33 @@ handle.SPELL_CAST_SUCCESS = function(ts, srcGUID, srcName, srcFlags, _, _, spell
   })
 end
 
+-- The cast a hit belongs to: the most recent one from this source for this spell
+-- that had already completed when the hit landed. A boss recasting the same spell
+-- every few seconds keeps several records inside DAMAGE_WINDOW at once, and a tick
+-- belongs to exactly one of them -- crediting every match inflates the total by the
+-- number of overlapping casts, which is how a 957k spell reported 4.7m.
+local function owningCast(srcGUID, spellID, at)
+  for i = 1, #records do          -- records is newest first
+    local rec = records[i]
+    if open[rec] and rec.srcGUID == srcGUID and rec.spellID == spellID
+       and rec.completedAt <= at then
+      return rec
+    end
+  end
+  return nil
+end
+
 local function accumulate(srcGUID, spellID, dstGUID, amount)
   local now = GetTime()
   closeStale(now)
-  for rec in pairs(open) do
-    if rec.srcGUID == srcGUID and rec.spellID == spellID then
-      rec.damage = rec.damage + (amount or 0)
-      if dstGUID then
-        rec.dmgTo[dstGUID] = (rec.dmgTo[dstGUID] or 0) + (amount or 0)
-        rec.lastHitAt[dstGUID] = now
-      end
-      if ns.Panel then ns.Panel:Refresh() end
-    end
+  local rec = owningCast(srcGUID, spellID, now)
+  if not rec then return end
+  rec.damage = rec.damage + (amount or 0)
+  if dstGUID then
+    rec.dmgTo[dstGUID] = (rec.dmgTo[dstGUID] or 0) + (amount or 0)
+    rec.lastHitAt[dstGUID] = now
   end
+  if ns.Panel then ns.Panel:Refresh() end
 end
 
 handle.SPELL_DAMAGE = function(ts, srcGUID, _, _, dstGUID, _, spellID, _, _, amount)
@@ -153,12 +167,19 @@ handle.UNIT_DIED = function(ts, _, _, _, dstGUID, dstName)
   local now = GetTime()
   if isPartyPlayer(dstGUID) then
     ns.Kick:OnDeath(dstGUID, now, true)
+    -- One death is one death: claimed by the single cast that hit them last, not by
+    -- every cast still inside the window. Otherwise a channel recast five times
+    -- reports five kills for one UNIT_DIED.
+    local best, bestHit = nil, nil
     for rec in pairs(open) do
       local hit = rec.lastHitAt[dstGUID]
       if hit and (now - hit) <= ns.DEATH_WINDOW and (rec.dmgTo[dstGUID] or 0) > 0 then
-        rec.deaths[dstName or "?"] = rec.dmgTo[dstGUID]
+        if not bestHit or hit > bestHit or (hit == bestHit and rec.completedAt > best.completedAt) then
+          best, bestHit = rec, hit
+        end
       end
     end
+    if best then best.deaths[dstName or "?"] = best.dmgTo[dstGUID] end
     if ns.Panel then ns.Panel:Refresh() end
   end
   -- The caster died mid-cast; nothing completed.

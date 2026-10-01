@@ -213,6 +213,24 @@ eq(fs2.pull, openPull, "an idle tick far ahead of the log leaves the pull open")
 fs2:idle(fs2.now + 10)                -- caught up, and genuinely quiet
 eq(fs2.pull, nil, "but a quiet gap at the log's own time does close it")
 
+print("\n[parser] a line with no actor is not a party member")
+-- Real logs carry environment ticks as sourceGUID 0000000000000000, name "nil", but
+-- with the AFFILIATION flags of the player concerned. That passed the group test and
+-- became a sixth, nameless member listed in every availability line.
+do
+  local ns2 = host.init(".")
+  local s2 = Session.new(ns2, { host = host, quietGap = 5, knowledge = Knowledge.load("/dev/null") })
+  s2:line('9/30/2026 18:57:57.162-7  SPELL_AURA_APPLIED,0000000000000000,nil,0x514,0x80000000,'
+    .. 'Player-11-0E60432F,"Rawria-Tichondrius-US",0x514,0x80000000,1297338,"Deadly Venom",0x8,DEBUFF')
+  local n, nullKeyed = 0, false
+  for guid, pl in pairs(ns2.Kick.players) do
+    n = n + 1
+    if not pl.name or guid == "0000000000000000" then nullKeyed = true end
+  end
+  eq(n, 1, "only the real player on the receiving end joins the roster")
+  eq(nullKeyed, false, "the null GUID is never added as a nameless member")
+end
+
 print("\n[parser] rendering")
 local text = report.text(pulls[1], { color = false, model = true })
 has(text, "KILLED Rek-Illidan", "the death is called out")

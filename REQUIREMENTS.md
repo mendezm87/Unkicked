@@ -45,6 +45,8 @@ It reports facts. It does not name a culprit — see R-7.
 | **R-15** | Never attempt to register an event the client forbids. `COMBAT_LOG_EVENT` and `COMBAT_LOG_EVENT_UNFILTERED` are refused up front; every other registration is wrapped so a future restriction costs one feature, not the addon's load. | done |
 | **R-16** | Every guarded read goes through `ns.Plain` / `ns.IsSecret` and is never compared, arithmetic'd, or boolean-tested directly. A secret reads as **unknown**. | done |
 | **R-17** | State the restriction plainly rather than render an empty panel. `/uk why` reports which events are blocked and whether restrictions are active now. | done |
+| **R-19** | A damage event belongs to exactly **one** cast: the most recent cast of that `(sourceGUID, spellID)` that had completed when the hit landed. A death is claimed by exactly **one** cast: the one that hit that player last inside the death window. An enemy recasting the same spell keeps several records inside the 30s attribution window simultaneously, so crediting every match multiplies both the damage total and the death count by the number of overlapping casts. | done |
+| **R-20** | A party member is only a roster entry if the actor is a real `Player-*` GUID. Environment and no-source events are written with the null GUID and the literal name `nil` but carry the affiliation flags of the player they concern, which otherwise passes the group test and becomes a nameless extra member in every availability line. | done |
 | **R-18** | Resolve every live `UnitGUID` through `ns.GUID`, which returns nil for a secret. A GUID is only ever used as a table key and indexing a table with a secret is a hard error, not a nil read, so an unusable GUID must mean "no unit" rather than reaching a `t[guid] = v`. | done |
 
 ## ⚠ R-1 … R-10 are not reachable on a 12.x client
@@ -164,6 +166,25 @@ The generator also emits, from the same build:
   identifier `COMBATANT_INFO` reports: `96212` (Coldthirst) and `116924` / `118850`
   (Honed Reflexes, two entries for the same talent). `conditional = true` marks a
   reduction that only pays out on a successful interrupt.
+
+## Verified against a real dungeon log
+
+Build `12.1.0` / `COMBAT_LOG_VERSION 22`, Kings' Rest, 129,216 lines, 4 encounters,
+20 `COMBATANT_INFO`, 34 interrupts. This is the first run against a real retail
+dungeon rather than the synthetic fixture, and it confirms:
+
+- **Advanced-logging layout** — 19 unit fields, located by tail shape; 0 lines skipped.
+- **Damage totals, cross-checked field-for-field against an independent pass:**
+  Shadow Barrage 956,803 · Arc Lightning 1,363,197 · Gilded Destruction 1,506,895 —
+  all three matched exactly *after* R-19. Before it, Shadow Barrage reported 4.7m.
+- **`COMBATANT_INFO` spec + talent read** — all five members resolved to the right
+  interrupt with its exact cooldown, marked `from log`.
+- **Boss segmentation** — The Golden Serpent, Mchimba the Embalmer, The Council of
+  Tribes and King Dazar each bracketed on `ENCOUNTER_START`/`END` with the outcome.
+- **Learned interruptibility** — 12 spells proven kickable on the first pass; the
+  second pass over the same log reports 26 unkicked casts that the first could not
+  classify. This is the designed behaviour, and it means **the first run of a fresh
+  install under-reports** until the knowledge file fills in.
 
 **Still unverified:** whether any DB2 table states interruptibility directly.
 `SpellInterrupts.InterruptFlags` exists and is populated for 122,170 spells, but the

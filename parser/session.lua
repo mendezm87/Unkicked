@@ -70,6 +70,12 @@ end
 
 function Session:noteActor(guid, name, flags)
   if not guid or guid == "" then return end
+  -- A log line with no actor writes the null GUID and the literal name "nil", with
+  -- the affiliation flags of whoever it concerned -- e.g. an environment DoT ticking
+  -- on a party member. That passes the flag test, so without this it becomes a
+  -- sixth, nameless party member in every roster and every availability line.
+  if not guid:find("^Player%-") then return end
+  if name == "nil" then name = nil end
   if not isGroupPlayer(flags) then return end
   local players = self.ns.Kick.players
   local p = players[guid]

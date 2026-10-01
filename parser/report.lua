@@ -45,13 +45,22 @@ local function partition(records, minDamage)
   return sure, unsure
 end
 
+local function trunc(s, n)
+  if #s <= n then return s end
+  return s:sub(1, n - 1) .. "\xE2\x80\xA6"
+end
+
 local function row(c, r, t0)
   local deaths = {}
   for who, amount in pairs(r.deaths or {}) do
     deaths[#deaths + 1] = ("%s (%s)"):format(who, short(amount))
   end
-  local line = ("  %s%s  %-28s %s%8s%s"):format(
-    c.dim, clock(r.completedAt - t0), r.spellName, c.bold, short(r.damage or 0), c.reset)
+  -- Name the caster. Two mobs of the same type casting the same spell in the same
+  -- second is normal (a real pack had two Hexes at 0:18 from different GUIDs), and
+  -- without the source those read as a duplicated row rather than two casts.
+  local line = ("  %s%s  %-26s %-22s %s%8s%s"):format(
+    c.dim, clock(r.completedAt - t0), r.spellName, trunc(r.srcName or "?", 22),
+    c.bold, short(r.damage or 0), c.reset)
   if #deaths > 0 then
     line = line .. ("  %sKILLED %s%s"):format(c.red, table.concat(deaths, ", "), c.reset)
   end

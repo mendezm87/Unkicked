@@ -299,6 +299,38 @@ stub.advance(ns.DAMAGE_WINDOW + 1)
 stub.cleu("SPELL_DAMAGE", E, stub.friend(ROG.guid, ROG.name), { 777, "Big Bolt", 1, 1234 })
 eq(ns.Cast.records[1].damage, 0, "damage after the attribution window is dropped")
 
+-- ============================== R-19 overlapping casts of the SAME spell
+-- From a real Kings' Rest log: "Shadow of Zul" recast Shadow Barrage ten times in
+-- 25s, so up to seven records sat inside DAMAGE_WINDOW at once. Crediting every
+-- matching open record reported 4.7m for a spell that actually did 957k, and one
+-- UNIT_DIED was reported as five separate kills.
+print("\n[R-19] a hit belongs to exactly one cast, and a death to exactly one cast")
+loadAddon(); freshParty(); stub.advance(ns.COLD_START + 1)
+castStart(777); stub.advance(1); castDone(777)          -- cast A
+stub.advance(2)
+castStart(777); stub.advance(1); castDone(777)          -- cast B, A still open
+eq(#ns.Cast.records, 2, "both casts of the same spell are recorded")
+stub.cleu("SPELL_DAMAGE", E, stub.friend(ROG.guid, ROG.name), { 777, "Big Bolt", 1, 40000 })
+eq(ns.Cast.records[1].damage, 40000, "the hit lands on the most recent completed cast")
+eq(ns.Cast.records[2].damage, 0, "and is NOT double-counted onto the earlier one")
+local casts, dmg = ns.Cast:Summary()
+eq(dmg, 40000, "so the pull total is the damage that actually happened")
+
+stub.advance(1)
+stub.cleu("UNIT_DIED", nil, stub.friend(ROG.guid, ROG.name), {})
+eq(ns.Cast.records[1].deaths["Slink"], 40000, "the cast that hit them last claims the death")
+eq(next(ns.Cast.records[2].deaths), nil, "the earlier overlapping cast does not also claim it")
+local _, _, deaths = ns.Cast:Summary()
+eq(deaths, 1, "one UNIT_DIED counts as one death, not one per overlapping cast")
+
+-- a hit that arrives before a later cast completed still belongs to the earlier one
+loadAddon(); freshParty(); stub.advance(ns.COLD_START + 1)
+castStart(777); stub.advance(1); castDone(777)
+stub.cleu("SPELL_DAMAGE", E, stub.friend(ROG.guid, ROG.name), { 777, "Big Bolt", 1, 7000 })
+castStart(777); stub.advance(1); castDone(777)
+eq(ns.Cast.records[2].damage, 7000, "a tick before the recast stays with the cast that was live")
+eq(ns.Cast.records[1].damage, 0, "the later cast does not retroactively absorb it")
+
 -- ============================================================= summary + wipe
 print("\n[misc] summary and wipe")
 loadAddon(); freshParty(); stub.advance(ns.COLD_START + 1)
