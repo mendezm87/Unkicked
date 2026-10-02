@@ -93,19 +93,46 @@ local function hasSources(s)
   return s ~= nil and s.combatSources ~= nil and s.combatSources[1] ~= nil
 end
 
-local function newestSessionID()
+-- Blizzard does not document which field carries the id, and it is not the same
+-- in every build, so every reader of this list goes through one place.
+local function idOf(entry)
+  if entry == nil then return nil end
+  if type(entry) ~= "table" then return ns.Plain(entry) end
+  return ns.Plain(entry.sessionID or entry.sessionId or entry.id)
+end
+
+local function sessionList()
   local C = C_DamageMeter
-  if not C.GetAvailableCombatSessions then return nil end
+  if not C or not C.GetAvailableCombatSessions then return {} end
   local ok, list = pcall(C.GetAvailableCombatSessions)
-  if not ok or type(list) ~= "table" or #list == 0 then return nil end
-  local newest = list[#list]
-  if type(newest) == "table" then return newest.sessionID or newest.sessionId or newest.id end
-  return newest
+  if not ok or type(list) ~= "table" then return {} end
+  return list
+end
+
+local function newestSessionID()
+  local list = sessionList()
+  if #list == 0 then return nil end
+  return idOf(list[#list])
 end
 
 -- Gotcha 5.
+--
+-- `which` is a SEGMENT: the string "current", the string "overall", or a table
+-- { id = <sessionID> } naming one of Blizzard's own past combat sessions. The
+-- id form is what makes the panel's segment dropdown able to show a fight that
+-- is already over -- see Meter:Segments.
 local function sessionFor(which, attr)
   if not attr or not Meter:Available() then return nil end
+
+  if type(which) == "table" and which.id ~= nil then
+    local C = C_DamageMeter
+    if not C.GetCombatSessionFromID then return nil end
+    local ok, s = pcall(C.GetCombatSessionFromID, which.id, attr)
+    -- No by-type fallback here: an id names one specific session and quietly
+    -- serving a different one would mislabel every number on screen.
+    return ok and s or nil
+  end
+
   local value = sessionValue(which)
   if value == nil then return nil end
 
@@ -127,7 +154,18 @@ end
 
 function Meter:Duration(which)
   local C = C_DamageMeter
-  if not C or not C.GetSessionDurationSeconds then return nil end
+  if not C then return nil end
+
+  -- A session addressed by id is not addressable by GetSessionDurationSeconds,
+  -- which takes the enum. Read the clock off the session object instead, and
+  -- report nil rather than the Current session's duration under its name.
+  if type(which) == "table" and which.id ~= nil then
+    local s = sessionFor(which, metric("Interrupts"))
+    if type(s) ~= "table" then return nil end
+    return ns.Plain(s.durationSeconds or s.duration or s.combatDuration)
+  end
+
+  if not C.GetSessionDurationSeconds then return nil end
   local value = sessionValue(which)
   if value == nil then return nil end
   local ok, v = pcall(C.GetSessionDurationSeconds, value)
@@ -379,6 +417,10 @@ Meter.secretGuidRefusals = 0
 function Meter:Spells(which, guid, creatureID, attrName)
   local attr = metric(attrName or "Interrupts")
   if not attr or guid == nil then return nil end
+  -- There is no by-id drill-down in the API, only by session TYPE. Serving the
+  -- Current session's spells under a past session's label would be a lie, so a
+  -- segment addressed by id has no breakdown at all.
+  if type(which) == "table" then return nil end
   local value = sessionValue(which)
   if value == nil then return nil end
   local ok, container = pcall(C_DamageMeter.GetCombatSessionSourceFromType,
@@ -495,6 +537,145 @@ end
 function Meter:Clock(s)
   s = math.floor(tonumber(s) or 0)
   return ("%d:%02d"):format(math.floor(s / 60), s % 60)
+end
+
+-- --------------------------------------------------------------- segments
+-- What the panel's dropdown offers, in the order it offers it.
+--
+-- Four kinds, and they come from genuinely different places:
+--
+--   live    -- C_DamageMeter's Current session. Inside a key this is the KEY SO
+--              FAR, not the pull in progress: measured on a real +13 it spanned
+--              the whole 24:18 run, because secrets lift when you leave the
+--              restricted map and not when you leave combat.
+--   run     -- our own keystone total, summed from the harvested pulls, so it
+--              agrees with the offline parser's --overall for the same key.
+--   pull    -- one harvested pull, i.e. the difference between two readable
+--              snapshots. These are the "past pulls" worth selecting. Inside a
+--              key there is usually exactly ONE of them, arriving at
+--              CHALLENGE_MODE_COMPLETED and covering the whole run, for the
+--              reason above -- so a key with ten packs in it can still offer a
+--              single pull entry. That is a client restriction, not a gap here.
+--   session -- one of Blizzard's own past combat sessions, by id. Out in the
+--              world each fight gets its own session and the amounts are plain,
+--              so these are real selectable past combats. They carry no
+--              per-spell drill-down (there is no by-id variant of it), so the
+--              kickable column is blank on them.
+local function segmentKey(kind, n)
+  if kind == "pull" then return "pull:" .. tostring(n) end
+  if kind == "session" then return "session:" .. tostring(n) end
+  return kind == "run" and "overall" or "current"
+end
+
+-- Parses a stored key back into a kind. Unrecognised keys -- including a
+-- "pull:7" left in SavedVariables after the pulls were wiped -- read as live,
+-- which is the one segment that always exists.
+function Meter:ParseSegment(key)
+  if type(key) ~= "string" then return "live" end
+  local n = key:match("^pull:(%d+)$")
+  if n then return "pull", tonumber(n) end
+  local id = key:match("^session:(.+)$")
+  if id then return "session", tonumber(id) or id end
+  if key == "overall" then return "run" end
+  return "live"
+end
+
+-- The live segment's own name, which depends entirely on whether a key is open.
+function Meter:LiveLabel()
+  local clock = self:Clock(self:Duration("current") or 0)
+  if not self.run then return ("session  %s  (no key)"):format(clock) end
+  if self.run.endedAt then return ("key total  %s"):format(clock) end
+  return ("key so far  %s"):format(clock)
+end
+
+function Meter:Segments()
+  local out = {}
+  out[#out + 1] = { key = "current", kind = "live", label = self:LiveLabel() }
+
+  local total = self:Total()
+  out[#out + 1] = {
+    key = "overall", kind = "run",
+    label = total
+      and ("run  %s  %d pulls"):format(self:Clock(total.duration), total.pulls)
+      or "run  no pulls yet",
+    empty = (total == nil) or nil,
+  }
+
+  for i, pull in ipairs(self.pulls) do
+    out[#out + 1] = {
+      key = segmentKey("pull", i), kind = "pull", index = i,
+      -- A pull flagged wholeRun IS the key: calling it "pull 1" is the exact lie
+      -- R-20 was about.
+      label = ("%s  %s  %d kicks"):format(
+        pull.wholeRun and "whole key" or ("pull " .. i),
+        self:Clock(pull.duration or 0), pull.kicks or 0),
+    }
+  end
+
+  -- Newest first: the fight you just finished is the one you want to look at.
+  local list = sessionList()
+  for i = #list, 1, -1 do
+    local id = idOf(list[i])
+    if id ~= nil then
+      local secs = self:Duration({ id = id })
+      out[#out + 1] = {
+        key = segmentKey("session", id), kind = "session", id = id,
+        label = ("combat %d%s"):format(i, secs and ("  " .. self:Clock(secs)) or ""),
+      }
+    end
+  end
+  return out
+end
+
+function Meter:SegmentLabel(key)
+  for _, seg in ipairs(self:Segments()) do
+    if seg.key == key then return seg.label, seg end
+  end
+  return nil
+end
+
+-- Resolve a segment key to rows the panel can draw.
+--
+-- Returns rows, plain, label, kind -- or nil when the key names something that
+-- no longer exists (a pull from a key that has since been reset, a session
+-- Blizzard has expired). nil is the signal to fall back to the live segment and
+-- SAY so, rather than drawing an empty table under a stale heading.
+function Meter:View(key)
+  local kind, n = self:ParseSegment(key)
+
+  if kind == "pull" then
+    local pull = self.pulls[n]
+    if not pull then return nil end
+    -- A harvested pull is plain by construction: it only exists because the
+    -- values were readable at the moment it was taken.
+    return pull.rows, true,
+      ("%s  %s"):format(pull.wholeRun and "whole key" or ("pull " .. n),
+        self:Clock(pull.duration or 0)), kind
+  end
+
+  if kind == "session" then
+    local rows, plain = self:Rows({ id = n })
+    if not rows then return nil end
+    -- Take the label from the dropdown's own list so the heading and the entry
+    -- that selected it read the same -- the list numbers sessions by position
+    -- because the raw id is not a thing a player recognises.
+    local label = self:SegmentLabel(key)
+    if not label then
+      local secs = self:Duration({ id = n })
+      label = ("combat %s%s"):format(tostring(n), secs and ("  " .. self:Clock(secs)) or "")
+    end
+    return rows, plain ~= false, label, kind
+  end
+
+  if kind == "run" then
+    local total = self:Total()
+    if not total then return {}, true, "run  no pulls yet", kind end
+    return total.rows, true,
+      ("run  %s  %d pulls"):format(self:Clock(total.duration), total.pulls), kind
+  end
+
+  local rows, plain = self:Rows("current")
+  return rows or {}, plain ~= false, self:LiveLabel(), "live"
 end
 
 -- A snapshot is cumulative; a pull is the difference between two of them.

@@ -55,6 +55,7 @@ unkicked -- reports the enemy casts nobody stopped, per pull, from WoWCombatLog.
   --current           report each pull only, no run total
   --overall           report only the end-of-run total
   --both              both (default): each pull, then the total when the run ends
+  --pull N[,N...]     report only these pulls (by their number in the run)
   --top N             rows per section in the overall report (default 8)
   --all               report every segment, not just mythic+ keys
   --mplus             mythic+ keys only (default)
@@ -78,6 +79,16 @@ while i <= #a do
   elseif v == "--current" then opts.segment = "current"
   elseif v == "--overall" then opts.segment = "overall"
   elseif v == "--both" then opts.segment = "both"
+  elseif v == "--pull" then
+    -- The in-game panel got a dropdown for this; the parser's equivalent is a
+    -- flag, because a pull that is already printed cannot be re-selected.
+    i = i + 1
+    opts.onlyPulls = {}
+    for n in tostring(a[i] or ""):gmatch("%d+") do opts.onlyPulls[tonumber(n)] = true end
+    if next(opts.onlyPulls) == nil then
+      io.stderr:write("--pull wants one or more pull numbers, e.g. --pull 7 or --pull 3,5\n")
+      os.exit(2)
+    end
   elseif v == "--all" then opts.scope = "all"
   elseif v == "--mplus" then opts.scope = "mplus"
   elseif v == "--top" then i = i + 1; opts.top = tonumber(a[i]) or 8
@@ -154,7 +165,12 @@ local session = Session.new(ns, {
     totals:add(pull, opts.minDamage)
     grand:add(pull, opts.minDamage)
 
-    if showPulls then
+    -- Selected out, but still counted into the run total: "show me pull 7" is a
+    -- request to read one pull, not a claim that the other nine did not happen.
+    local selected = (opts.onlyPulls == nil)
+      or opts.onlyPulls[pull.runIndex or pull.index] == true
+
+    if showPulls and selected then
       if opts.json then
         io.write(report.json(pull, opts), "\n")
       else

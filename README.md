@@ -23,7 +23,7 @@ Built for 5-player content on retail (Midnight, patch 12.1, Season 2).
 >
 > **In game** you get what `C_DamageMeter` can tell us, which is real and live:
 > interrupts **pressed** per player, deaths and damage taken, per pull and for the
-> whole key, with a current/overall toggle. That is "who is kicking".
+> whole key, with a segment picker. That is "who is kicking".
 >
 > **Out of game** you get the thing the addon is named after. Whether an enemy cast
 > was interruptible, and which casts got through, are not in any 12.x API — but they
@@ -87,6 +87,7 @@ Like a damage meter's segment toggle:
 lua parser\unkicked.lua --both      # default: each pull, then the run total
 lua parser\unkicked.lua --current   # pulls only
 lua parser\unkicked.lua --overall   # the run total only
+lua parser\unkicked.lua --pull 7    # just pull 7 (the run total still covers them all)
 lua parser\unkicked.lua --overall --top 5
 ```
 
@@ -257,14 +258,17 @@ of *up*, which is how we know the talent read is doing something.
 ## In-game commands
 
 On a 12.x client the panel shows the `C_DamageMeter` view — interrupts pressed per
-player, deaths, damage taken — for the current pull or the whole key. `/uk why`
+player, deaths, damage taken — for the live segment, any harvested pull, or the
+whole key, chosen from a dropdown on the panel heading. `/uk why`
 prints exactly which parts of the old design the client still refuses.
 
 | | |
 |---|---|
 | `/uk why` | which events are blocked, what the meter does and does not give |
 | `/uk kicks` | interrupts pressed per player, this pull and this key |
-| `/uk current` / `/uk overall` | panel shows this pull, or the whole key |
+| `/uk current` / `/uk overall` | panel shows the live segment, or the whole key |
+| `/uk segments` | list every segment the panel can show |
+| `/uk pull <n>` | panel shows pull *n* |
 | `/uk pulls` | toggle the one-line chat report after each pull |
 | `/uk` | toggle the panel |
 | `/uk clear` | drop the current list |

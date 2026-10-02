@@ -480,5 +480,36 @@ do
   ok(not line:find("spec unknown"), "and is not confused with an unreadable spec")
 end
 
+do
+  -- R-31, the parser half of the segment picker. The in-game panel got a
+  -- dropdown; the CLI cannot re-select a pull it has already printed, so it gets
+  -- a flag. Driven through the actual CLI rather than the module, because the
+  -- thing worth pinning is the argument handling.
+  local interp = arg[-1] or "luajit"
+  local function run(flags)
+    local f = io.popen(("%s parser/unkicked.lua --no-color --all %s tests/fixtures/sample-combatlog.txt 2>&1")
+      :format(interp, flags))
+    local out = f:read("*a"); f:close()
+    return out
+  end
+
+  local all = run("")
+  has(all, "== pull 1", "without --pull every pull is printed")
+  has(all, "== pull 2", "including the second")
+
+  local one = run("--pull 2")
+  ok(not one:find("== pull 1", 1, true), "--pull 2 suppresses the pulls not asked for")
+  has(one, "== pull 2", "and prints the one that was")
+  -- A selected pull is still counted into the run: "show me pull 2" asks to read
+  -- one pull, it does not claim the others did not happen.
+  local function overallLine(text) return text:match("== overall[^\n]*") end
+  eq(overallLine(one), overallLine(all),
+    "and the run total still covers every pull, not just the selected one")
+
+  local two = run("--pull 1,2")
+  has(two, "== pull 1", "a comma list selects several")
+  has(two, "== pull 2", "both of them")
+end
+
 print(("\n%d passed, %d failed"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

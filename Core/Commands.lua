@@ -16,8 +16,10 @@ local function usage()
   print("  /uk immune     show casts that were immune to interrupts too")
   print("  /uk min <n>    hide casts under n damage")
   print("  /uk kicks      interrupts pressed per player, this pull and this key")
-  print("  /uk current    panel shows the current pull")
+  print("  /uk current    panel shows the live segment")
   print("  /uk overall    panel shows the whole key")
+  print("  /uk pull <n>   panel shows pull n (see /uk segments)")
+  print("  /uk segments   list every segment the panel can show")
   print("  /uk pulls      toggle the one-line chat report after each pull")
   print("  /uk log        is the client writing WoWCombatLog.txt right now?")
   print("  /uk log on|off set combat logging (same as /combatlog)")
@@ -73,7 +75,34 @@ SlashCmdList.UNKICKED = function(msg)
     end
 
   elseif cmd == "current" or cmd == "overall" then
-    ns.Print("panel showing %s", ns.Panel:Segment(cmd) == "overall" and "the whole key" or "this pull")
+    ns.Panel:Segment(cmd)
+    ns.Print("panel showing %s", (ns.Meter:SegmentLabel(ns.db.segment)) or ns.db.segment)
+
+  elseif cmd == "pull" then
+    local n = tonumber(arg)
+    if not n or not ns.Meter.pulls[n] then
+      ns.Print("no pull %s harvested in this run -- |cffffd200/uk segments|r lists what there is",
+        tostring(arg ~= "" and arg or "?"))
+    else
+      ns.Panel:Segment("pull:" .. n)
+      ns.Print("panel showing %s", (ns.Meter:SegmentLabel(ns.db.segment)) or ns.db.segment)
+    end
+
+  elseif cmd == "segments" then
+    -- The same list the panel's dropdown draws, for anyone who would rather
+    -- type than click -- and so that "there is only one pull in here" is
+    -- visible as a fact about the client rather than a missing feature.
+    local segs = ns.Meter:Segments()
+    ns.Print("segments the panel can show (%d):", #segs)
+    for _, seg in ipairs(segs) do
+      print(("  %s%-26s|r %s"):format(
+        seg.key == ns.db.segment and "|cffffd200" or "|cff808080",
+        seg.label, seg.key == ns.db.segment and "<- showing" or ("|cff505050" .. seg.key .. "|r")))
+    end
+    if #ns.Meter.pulls <= 1 and ns.Meter.run then
+      print("  |cff808080inside a key the amounts stay secret until you leave the map,|r")
+      print("  |cff808080so there is usually one harvestable segment, not one per pull.|r")
+    end
 
   elseif cmd == "pulls" then
     ns.db.pullReport = not ns.db.pullReport

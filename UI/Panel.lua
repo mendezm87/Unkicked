@@ -38,7 +38,7 @@ local C1_W = WIDTH - 16 - (C2_W + C3_W + C4_W + C5_W + GAP * 4)
 local HEAD_Y = 22
 local ROWS_Y = HEAD_Y + ROW_H
 
-local frame, rows
+local frame, rows, menu
 
 local function namesOf(list, limit)
   local out = {}
@@ -108,7 +108,10 @@ local function meterTooltip(p)
       (p.deaths or 0) > 0 and 1 or 0.7, (p.deaths or 0) > 0 and 0.2 or 0.7, 0.2)
     GameTooltip:AddDoubleLine("Damage taken", ns.Short(p.taken), 1, 1, 1, 1, 0.82, 0)
 
-    local spells = p.guid and ns.Meter:Spells(p.segment, p.guid, p.creatureID)
+    -- p.segment is nil for a harvested pull or a past session: there is no
+    -- by-id drill-down in the API, and serving the Current session's spells
+    -- under another segment's heading would be worse than no breakdown.
+    local spells = p.segment and p.guid and ns.Meter:Spells(p.segment, p.guid, p.creatureID)
     if spells and spells[1] then
       GameTooltip:AddLine(" ")
       GameTooltip:AddLine("Interrupts by spell", 1, 1, 1)
@@ -281,11 +284,21 @@ function Panel:Build()
   frame.seg.text = frame.seg:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   frame.seg.text:SetPoint("RIGHT")
   frame.seg.text:SetJustifyH("RIGHT")
-  frame.seg:SetScript("OnClick", function() Panel:Segment() end)
+  frame.seg:SetScript("OnClick", function(self, button)
+    -- Right-click cycles, left-click opens the list. Cycling is the muscle
+    -- memory from when there were only two segments; the list is the only way
+    -- to reach a specific past pull.
+    if button == "RightButton" then Panel:Segment() else Panel:Menu() end
+  end)
+  frame.seg:RegisterForClicks("LeftButtonUp", "RightButtonUp")
   frame.seg:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:AddLine("Segment", 1, 1, 1)
-    GameTooltip:AddLine("Click to switch between this pull and the whole key.", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine("Click for the list: the live view, the whole key, and", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine("every pull harvested so far. Right-click cycles.", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("Inside a key only one segment is usually harvestable:", 0.6, 0.6, 0.6)
+    GameTooltip:AddLine("the amounts stay secret until you leave the dungeon.", 0.6, 0.6, 0.6)
     GameTooltip:Show()
   end)
   frame.seg:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -340,8 +353,95 @@ function Panel:Build()
   return frame
 end
 
+-- -------------------------------------------------------- the segment dropdown
+-- Built here rather than with MenuUtil: the entries carry our own labels and
+-- have to survive a client where a label's underlying value is secret, and a
+-- list of five buttons in the panel's own style is less to go wrong than a
+-- native menu whose shape changes between builds.
+local MENU_W = 210
+
+local function segColor(kind)
+  if kind == "live" then return "|cff808080" end
+  if kind == "run" then return "|cffffd200" end
+  if kind == "pull" then return "|cff80b0ff" end
+  return "|cffb0b0b0"
+end
+
+local function buildMenu()
+  -- A file local, not a field on the frame: a stubbed frame answers any unknown
+  -- key with a function, so `frame.menu` is never nil and the nil check would
+  -- never fire.
+  if menu then return menu end
+  local m = CreateFrame("Frame", "UnkickedSegmentMenu", frame, "BackdropTemplate")
+  m:SetPoint("TOPRIGHT", frame.seg, "BOTTOMRIGHT", 0, -2)
+  m:SetFrameStrata("DIALOG")
+  m:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  m:SetBackdropColor(0, 0, 0, 0.92)
+  m:SetBackdropBorderColor(0.35, 0.35, 0.35, 1)
+  m:EnableMouse(true)
+  m.items = {}
+  m:Hide()
+  menu = m
+  Panel.menuFrame = m
+  return m
+end
+
+-- show == nil toggles.
+function Panel:Menu(show)
+  self:Build()
+  local m = buildMenu()
+  if show == nil then show = not m:IsShown() end
+  if not show then m:Hide(); return m end
+
+  local segs = (ns.Meter and ns.Meter:Segments()) or {}
+  for i, seg in ipairs(segs) do
+    local b = m.items[i]
+    if not b then
+      b = CreateFrame("Button", nil, m)
+      b:SetSize(MENU_W - 8, ROW_H)
+      b:SetPoint("TOPLEFT", 4, -(4 + (i - 1) * ROW_H))
+      b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      b.text:SetPoint("LEFT")
+      b.text:SetJustifyH("LEFT")
+      b.text:SetWordWrap(false)
+      b:SetScript("OnClick", function(self)
+        if self.segKey then Panel:Segment(self.segKey) end
+        Panel:Menu(false)
+      end)
+      m.items[i] = b
+    end
+    b.segKey = seg.key
+    b.text:SetText(("%s%s%s|r"):format(
+      seg.key == ns.db.segment and "|cffffd200>|r " or "   ",
+      segColor(seg.kind), seg.label))
+    b:Show()
+  end
+  for i = #segs + 1, #m.items do
+    m.items[i].segKey = nil
+    m.items[i]:Hide()
+  end
+  m:SetSize(MENU_W, 8 + ROW_H * math.max(#segs, 1))
+  m:Show()
+  return m
+end
+
+-- `which` is a segment key: "current", "overall", "pull:<n>" or "session:<id>".
+-- With no argument it advances to the next segment in the list, which is what
+-- the old two-state toggle did when the list was only ever two long.
 function Panel:Segment(which)
-  ns.db.segment = which or (ns.db.segment == "overall" and "current" or "overall")
+  if which == nil then
+    local segs = (ns.Meter and ns.Meter:Segments()) or {}
+    local at
+    for i, seg in ipairs(segs) do
+      if seg.key == ns.db.segment then at = i; break end
+    end
+    which = (#segs > 0) and segs[((at or 1) % #segs) + 1].key or "current"
+  end
+  ns.db.segment = which
   self:Refresh()
   return ns.db.segment
 end
@@ -421,47 +521,34 @@ local function setAmount(fs, value, fmt)
 end
 
 local function refreshMeter()
-  local segment = ns.db.segment == "overall" and "overall" or "current"
-  local data, plain, label
-
-  if segment == "overall" then
-    local total = ns.Meter:Total()
-    if total then
-      data, plain = total.rows, true
-      label = ("|cffffd200run|r  %s  %d pulls"):format(ns.Meter:Clock(total.duration), total.pulls)
-    else
-      data, plain, label = {}, true, "|cffffd200run|r  no pulls yet"
-    end
-  else
-    local r, isPlain = ns.Meter:Rows("current")
-    data, plain = r or {}, isPlain ~= false
-    local clock = ns.Meter:Clock(ns.Meter:Duration("current") or 0)
-    -- The live segment is NEVER a pull. C_DamageMeter's Current session was
-    -- measured on a real +13 spanning the entire 24:18 key, and nothing inside a
-    -- restricted map is readable between pulls anyway -- so there is no moment
-    -- at which this view means "the pull in progress". It is the key so far, or
-    -- outside a key whatever Blizzard has accumulated since the last reset.
-    -- Per-pull numbers come from the harvested deltas, in the chat line and the
-    -- run view, not from here.
-    if not ns.Meter.run then
-      label = ("|cff808080session|r  %s  |cff808080(no key)|r"):format(clock)
-    elseif ns.Meter.run.endedAt then
-      label = ("|cffffd200key total|r  %s"):format(clock)
-    else
-      label = ("|cffffd200key so far|r  %s"):format(clock)
-    end
+  -- The segment is whatever the dropdown last selected. A key stored in
+  -- SavedVariables can name a pull from a key that has since been reset, so a
+  -- view that does not resolve falls back to the live one and says it did --
+  -- an empty table under a stale heading is the worst of the three outcomes.
+  local key = ns.db.segment or "current"
+  local data, plain, label, kind = ns.Meter:View(key)
+  local stale
+  if data == nil then
+    stale = key
+    key, ns.db.segment = "current", "current"
+    data, plain, label, kind = ns.Meter:View(key)
   end
+  data = data or {}
 
-  frame.seg.text:SetText(label)
+  frame.seg.text:SetText(("%s%s|r |cff808080v|r"):format(segColor(kind), label))
   setCols(frame.head, "", "|cff808080kicks|r", "|cff808080died|r",
     "|cff808080taken|r", "|cffff9933kickable|r")
+
+  -- Only the two live-by-type segments can drill down per spell; a harvested
+  -- pull and a past session cannot (no by-id variant of the call exists).
+  local drill = (kind == "live" and "current") or (kind == "run" and "overall") or nil
 
   local shown = 0
   for i = 1, rowCount("meter") do
     local row, p = rows[i], data[i]
     if p then
       shown = shown + 1
-      p.plain, p.segment = plain, segment
+      p.plain, p.segment = plain, drill
       row.rec, row.player = nil, p
       row.c1:SetText(("|c%s%s|r%s"):format(ns.ClassColor(p.class),
         p.name or "?", p.isYou and " |cff808080(you)|r" or ""))
@@ -487,11 +574,15 @@ local function refreshMeter()
   -- PRESSED; the thing the addon is named after -- a cast nobody stopped -- is
   -- not in this API and never will be, so pretending by omission is the one
   -- failure mode worth designing against.
-  if shown == 0 then
+  if stale then
+    frame.footer:SetText(("|cffff9933%s is gone -- showing the live segment|r"):format(stale))
+  elseif kind == "pull" or kind == "session" then
+    frame.footer:SetText("|cff808080a finished segment -- click the heading for the list|r")
+  elseif shown == 0 then
     frame.footer:SetText("|cff808080no combat yet -- kicks pressed appear here per pull|r")
   elseif not plain then
     frame.footer:SetText("|cff808080live: kicks pressed. kickable damage lands when the pull ends|r")
-  elseif segment == "current" and not ns.Meter.run then
+  elseif kind == "live" and not ns.Meter.run then
     frame.footer:SetText("|cff808080not in a key -- per-pull totals start at CHALLENGE_MODE_START|r")
   else
     frame.footer:SetText("|cff808080kickable = dmg from proven-interruptible spells, not a cast count|r")
@@ -510,6 +601,9 @@ function Panel:Refresh()
   if not frame then return end
   local m = mode()
   self:Layout()
+  -- The dropdown only ever lists meter segments, so it has no business being on
+  -- screen in the other two modes.
+  if m ~= "meter" and menu then menu:Hide() end
 
   if m == "feed" then refreshFeed()
   elseif m == "meter" then refreshMeter()
@@ -532,7 +626,10 @@ function Panel:Toggle(show)
   self:Build()
   if show == nil then show = not frame:IsShown() end
   ns.db.showPanel = show
-  if show then frame:Show() self:Refresh() else frame:Hide() end
+  if show then frame:Show() self:Refresh() else
+    if menu then menu:Hide() end
+    frame:Hide()
+  end
 end
 
 ns.On("PLAYER_LOGIN", function()

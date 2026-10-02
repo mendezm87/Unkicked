@@ -911,6 +911,120 @@ do
   stub.meter.secret = false
 end
 
+-- ================================================== the segment dropdown (R-31)
+-- "Let me see past pulls and pick which section to view." The panel used to have
+-- a two-state toggle, which could reach the live view and the run total and
+-- nothing else -- there was no way to look at pull 3 once pull 4 had started.
+print("\n[panel] the segment dropdown")
+do
+  loadAddon()
+  stub.meter.available = true
+  stub.meter.secret = false
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+
+  -- With no key and no pulls there are still the two segments that always exist,
+  -- plus whatever past sessions Blizzard is holding (the stub holds one).
+  local segs = ns.Meter:Segments()
+  eq(segs[1] and segs[1].kind, "live", "the live segment is always first")
+  eq(segs[2] and segs[2].kind, "run", "and the run total is always offered")
+  ok(segs[2].label:find("no pulls yet", 1, true) ~= nil,
+    "the run entry says it is empty rather than pretending to have pulls")
+
+  stub.challenge = { level = 13, mapID = 500, mapName = "The Blinding Vale", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 5, taken = 100, deaths = 0 },
+  }, { duration = 60 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 9, taken = 250, deaths = 1 },
+  }, { duration = 150 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 2, "two pulls harvested, so two pulls are selectable")
+
+  segs = ns.Meter:Segments()
+  local byKey = {}
+  for _, seg in ipairs(segs) do byKey[seg.key] = seg end
+  ok(byKey["pull:1"] and byKey["pull:2"], "every harvested pull has its own entry")
+  ok(byKey["pull:2"].label:find("pull 2", 1, true) ~= nil,
+    ("and is labelled with its number and clock (%q)"):format(byKey["pull:2"].label))
+
+  -- Selecting a past pull shows THAT pull's numbers, not the live session's.
+  local f = stub.frames["UnkickedPanel"]
+  ns.Panel:Segment("pull:1")
+  eq(ns.db.segment, "pull:1", "the panel can be pointed at a specific past pull")
+  ok(f.seg.text:GetText():find("pull 1", 1, true) ~= nil,
+    ("and the heading names it (%q)"):format(f.seg.text:GetText()))
+  eq(ns.Panel.rows[1].c2:GetText(), "|cffffd2005|r", "showing pull 1's own 5 kicks")
+  ns.Panel:Segment("pull:2")
+  eq(ns.Panel.rows[1].c2:GetText(), "|cffffd2004|r",
+    "and pull 2's delta of 4, not the session's running 9")
+  ok(f.footer:GetText():find("finished segment", 1, true) ~= nil,
+    "the footer says this is a finished segment rather than the live one")
+
+  -- Cycling still works for anyone who kept the old habit, and now walks the
+  -- whole list instead of flipping between two.
+  ns.db.segment = "current"
+  eq(ns.Panel:Segment(), "overall", "right-click cycling goes live -> run")
+  eq(ns.Panel:Segment(), "pull:1", "-> the first pull")
+
+  -- The menu itself: one button per segment, the showing one marked, and a click
+  -- actually selects it.
+  local m = ns.Panel:Menu(true)
+  ok(m._shown ~= false, "the dropdown opens")
+  local items, live = ns.Panel.menuFrame.items, 0
+  for _, b in ipairs(items) do if b.segKey then live = live + 1 end end
+  eq(live, #segs, "with one entry per segment")
+  local marked = 0
+  for _, b in ipairs(items) do
+    if b.segKey and b.text:GetText():find(">", 1, true) then marked = marked + 1 end
+  end
+  eq(marked, 1, "exactly one entry is marked as the one on screen")
+  items[2]:Click()
+  eq(ns.db.segment, "overall", "clicking an entry selects that segment")
+  ok(ns.Panel.menuFrame._shown == false, "and closes the dropdown")
+
+  -- A key stored from a previous run names a pull that no longer exists. The
+  -- panel has to fall back and SAY so; an empty table under "pull 7" is worse
+  -- than either the truth or the live view.
+  ns.db.segment = "pull:7"
+  ns.Panel:Refresh()
+  eq(ns.db.segment, "current", "a stale segment key falls back to the live view")
+  ok(f.footer:GetText():find("is gone", 1, true) ~= nil,
+    ("and the footer says the old segment went away (%q)"):format(f.footer:GetText()))
+
+  -- One of Blizzard's own past sessions, addressed by id. Out in the world each
+  -- fight is its own session and the amounts are plain, so these are genuinely
+  -- viewable -- but there is no by-id drill-down, so no kickable column.
+  local rows, plain, label = ns.Meter:View("session:42")
+  ok(rows and rows[1], "a past Blizzard session resolves to rows")
+  eq(plain, true, "and out of combat its amounts are readable")
+  eq(label, ns.Meter:SegmentLabel("session:42"),
+    "and its heading reads the same as the dropdown entry that selected it")
+  eq(ns.Meter:Spells({ id = 42 }, "P-k"), nil,
+    "but a session addressed by id has no per-spell drill-down, rather than being served the Current session's")
+  eq(ns.Meter:View("session:999"), nil, "an id Blizzard no longer holds resolves to nothing")
+
+  -- The whole-key harvest must never be offered as "pull 1" (R-20).
+  ns.Meter.pulls[1].wholeRun = true
+  ok((ns.Meter:SegmentLabel("pull:1")):find("whole key", 1, true) ~= nil,
+    "a harvest that covers the entire key is labelled the whole key, not pull 1")
+
+  -- Commands reach the same places, and survive secret amounts.
+  ok(pcall(SlashCmdList.UNKICKED, "segments"), "/uk segments lists them")
+  ok(pcall(SlashCmdList.UNKICKED, "pull 2"), "/uk pull 2 selects a pull")
+  eq(ns.db.segment, "pull:2", "and the panel follows")
+  ok(pcall(SlashCmdList.UNKICKED, "pull 99"), "/uk pull on a pull that does not exist is refused, not an error")
+  eq(ns.db.segment, "pull:2", "leaving the selection alone")
+  stub.meter.secret = true
+  ns.db.segment = "current"
+  ok(pcall(function() return ns.Panel:Menu(true) end), "the dropdown builds mid-combat, where every amount is secret")
+  ok(pcall(SlashCmdList.UNKICKED, "segments"), "and /uk segments survives it too")
+  stub.meter.secret = false
+end
+
 -- ============================================================ the offline path
 -- parser/host.lua defines the same client globals this file stubs, so the offline
 -- suite runs in its own process rather than fighting over them. Same interpreter,

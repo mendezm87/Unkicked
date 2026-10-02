@@ -110,6 +110,14 @@ local function widget(name)
     if k == "ClearAllPoints" then return function() t._points = {}; return t end end
     if k == "CreateFontString" then return function() return widget(name .. "-fs") end end
     if k == "RegisterEvent" then return function(_, e) registered[e] = true; return t end end
+    -- Lets a test press a button the way a player does, rather than reaching
+    -- into the stored handler and bypassing whatever the button does first.
+    if k == "Click" then
+      return function(_, button)
+        if t._OnClick then t._OnClick(t, button or "LeftButton") end
+        return t
+      end
+    end
     if k == "SetScript" then
       return function(_, which, fn)
         if which == "OnEvent" then onEvent = fn end
