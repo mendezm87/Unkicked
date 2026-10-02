@@ -49,7 +49,25 @@ ns.Meter = Meter
 -- plain (readable) snapshot harvested after combat ended, which is the only
 -- moment the numbers can be summed at all.
 Meter.pulls = {}
-Meter.run = nil   -- { level, mapName, startedAt, endedAt, deathCount }
+Meter.run = nil   -- { level, mapName, startedAt, endedAt, deathCount, reported }
+
+-- The last readable snapshot, and the reason this file no longer treats the
+-- Current session as "a pull".
+--
+-- VERIFIED ON A REAL KEY (The Blinding Vale +13, 2026-10-01): C_DamageMeter's
+-- Current session does NOT reset between pulls inside a keystone. It spanned
+-- the whole 24:18 run, and its per-player interrupt counts matched the combat
+-- log exactly (26/19/12/9/0). Worse, nothing was harvestable DURING the key at
+-- all: the amounts stay secret for the whole restricted map, not merely while
+-- in combat, so every between-pull harvest came back secret and zero pulls were
+-- recorded across an entire dungeon.
+--
+-- So a pull is a DIFFERENCE between two readable snapshots of the same session,
+-- never a snapshot itself -- otherwise summing pulls counts pull one N times.
+-- When the only readable moment is the end of the key, the difference from a
+-- nil baseline is the whole key, which is still the right answer.
+Meter.baseline = nil
+Meter.cumulative = nil  -- true once a session has been seen to accumulate
 
 local function metric(name)
   local E = Enum and Enum.DamageMeterType
@@ -232,9 +250,16 @@ function Meter:Rows(which)
     local t = lookup(iTaken, row)
     -- Gotcha 1: these may be secret. They are carried RAW and only ever handed
     -- to a widget; `plain` says whether arithmetic on them is legal.
-    row.kicks = k and k.totalAmount or nil
-    row.taken = t and t.totalAmount or nil
-    row.deaths = lookupCount(iDeaths, row) or 0
+    -- A player absent from a metric's list scored nothing in it -- but only say
+    -- so when the join was DEFINITIVE. A guid match is; an identity match that
+    -- collided is not, and a blank cell beats a confident wrong zero. On the
+    -- real key this is why the local player's kick count was blank instead of 0:
+    -- he genuinely pressed none, so he was not in the Interrupts list at all.
+    local definite = row.guid ~= nil
+    row.kicks = k and k.totalAmount or (definite and iKicks and 0 or nil)
+    row.taken = t and t.totalAmount or (definite and iTaken and 0 or nil)
+    local d = lookupCount(iDeaths, row)
+    row.deaths = d or (definite and iDeaths and 0 or nil)
     if ns.IsSecret(row.kicks) or ns.IsSecret(row.taken) then secret = true end
   end
 
@@ -373,16 +398,87 @@ function Meter:KeyDeaths()
   return (ok and ns.Plain(v)) or nil
 end
 
+-- --------------------------------------------------------------- diagnostics
+-- Prints the raw shape of each metric list rather than our interpretation of
+-- it, because the one discrepancy we cannot resolve offline (deaths) could live
+-- on either side of the join.
+function Meter:Audit()
+  if not self:Available() then ns.Print("no damage meter on this client"); return end
+  ns.Print("raw C_DamageMeter rows (current session):")
+  for _, name in ipairs({ "Interrupts", "DamageTaken", "Deaths" }) do
+    local attr = metric(name)
+    local s = attr and sessionFor("current", attr)
+    local list = s and s.combatSources
+    if not list then
+      print(("  %-12s no list"):format(name))
+    else
+      print(("  %-12s %d rows"):format(name, #list))
+      for i = 1, #list do
+        local src = list[i]
+        local n = ns.Plain(src.name)
+        print(("    [%d] %s guid=%s recap=%s amount=%s"):format(
+          i, tostring(n or "<secret>"),
+          ns.Plain(src.guid) ~= nil and "plain" or "<secret>",
+          tostring(ns.Plain(src.deathRecapID)),
+          ns.IsSecret(src.totalAmount) and "<secret>" or tostring(ns.Plain(src.totalAmount))))
+      end
+    end
+  end
+  local counted = self:KeyDeaths()
+  ns.Print("key death counter: %s; pulls harvested: %d; harvests refused by secrets: %d",
+    tostring(counted), #self.pulls, self.blockedHarvests or 0)
+end
+
 function Meter:Clock(s)
   s = math.floor(tonumber(s) or 0)
   return ("%d:%02d"):format(math.floor(s / 60), s % 60)
 end
 
+-- A snapshot is cumulative; a pull is the difference between two of them.
+-- Returns nil when nothing happened between the two.
+local function rowKey(r) return r.name or r.identity or tostring(r) end
+
+local function diffSnapshot(snap, base)
+  if not base then return snap end
+  -- A session that went BACKWARDS is a different session (a meter reset, or
+  -- Blizzard opening a fresh one). Diffing against it would give negatives, so
+  -- the snapshot stands on its own.
+  if (snap.duration or 0) < (base.duration or 0)
+    or snap.kicks < base.kicks or snap.taken < base.taken or snap.deaths < base.deaths then
+    return snap
+  end
+  Meter.cumulative = true
+
+  local was = {}
+  for _, r in ipairs(base.rows) do was[rowKey(r)] = r end
+
+  local out = { rows = {}, duration = (snap.duration or 0) - (base.duration or 0),
+                kicks = 0, deaths = 0, taken = 0, kickable = 0 }
+  for _, r in ipairs(snap.rows) do
+    local b = was[rowKey(r)]
+    local d = {
+      name = r.name, class = r.class, isYou = r.isYou, identity = r.identity,
+      kicks = r.kicks - (b and b.kicks or 0),
+      taken = r.taken - (b and b.taken or 0),
+      deaths = r.deaths - (b and b.deaths or 0),
+      kickable = (r.kickable or 0) - (b and b.kickable or 0),
+    }
+    -- Per-spell kickable breakdowns are cumulative too and cannot be subtracted
+    -- meaningfully, so a delta carries the total only.
+    out.kicks = out.kicks + d.kicks
+    out.taken = out.taken + d.taken
+    out.deaths = out.deaths + d.deaths
+    out.kickable = out.kickable + d.kickable
+    out.rows[#out.rows + 1] = d
+  end
+  return out
+end
+
 -- ------------------------------------------------------------------- harvest
--- Values go plain when combat ends, but not necessarily on the same frame as
--- PLAYER_REGEN_ENABLED, and a snapshot taken a tick early comes back secret and
--- unusable. So: try, and if the values are still secret, try again shortly --
--- rather than dropping the pull or, worse, recording zeroes.
+-- Values go plain when the RESTRICTION lifts, which on a dungeon map is not the
+-- same thing as combat ending -- on a real +13 nothing was readable until the
+-- key itself was over. So this tries, retries, and simply records nothing if the
+-- map never lets go; the end-of-key harvest then captures the whole run at once.
 local HARVEST_TRIES = 4
 local HARVEST_GAP = 0.75
 
@@ -390,21 +486,35 @@ local function harvest(try)
   if not Meter.run then return end
   local snap = Meter:Snapshot("current")
   if not snap then
+    Meter.blockedHarvests = (Meter.blockedHarvests or 0) + 1
     if try < HARVEST_TRIES and C_Timer and C_Timer.After then
       C_Timer.After(HARVEST_GAP, function() harvest(try + 1) end)
     end
     return
   end
 
+  local pull = diffSnapshot(snap, Meter.baseline)
+  Meter.baseline = snap
+
   -- A pull nobody did anything in is not a pull. Keeps the numbering stable
   -- enough to say out loud, the same rule the offline parser uses.
-  if snap.kicks == 0 and snap.taken == 0 and snap.deaths == 0 then return end
+  if pull.kicks == 0 and pull.taken == 0 and pull.deaths == 0 then return end
 
-  snap.index = #Meter.pulls + 1
-  Meter.pulls[snap.index] = snap
+  pull.index = #Meter.pulls + 1
+  -- The honest name for "the first thing we could read was the finished key".
+  pull.wholeRun = (pull == snap and Meter.run.endedAt ~= nil) or nil
+  Meter.pulls[pull.index] = pull
 
-  if ns.db and ns.db.pullReport then Meter:Announce(snap) end
+  if ns.db and ns.db.pullReport then Meter:Announce(pull) end
   if ns.Panel then ns.Panel:Refresh() end
+
+  -- The key may already be over by the time anything became readable. Report
+  -- when the numbers actually arrive rather than at a fixed delay that was too
+  -- early.
+  if Meter.run.endedAt and not Meter.run.reported then
+    Meter.run.reported = true
+    Meter:Report()
+  end
 end
 
 function Meter:Announce(snap)
@@ -469,6 +579,7 @@ local function startRun()
     end
   end
   Meter.pulls = {}
+  Meter.baseline = nil
   Meter.run = { level = level, mapName = mapName or (GetInstanceInfo and GetInstanceInfo()) or nil,
                 startedAt = GetTime() }
   if ns.Panel then ns.Panel:Refresh() end
@@ -479,16 +590,19 @@ ns.On("CHALLENGE_MODE_START", startRun)
 ns.On("CHALLENGE_MODE_COMPLETED", function()
   if not Meter.run then return end
   Meter.run.endedAt = GetTime()
-  -- The last pull is the boss, and combat ends with it, so the harvest for it is
-  -- still in flight. Report after it lands rather than one pull short.
-  if C_Timer and C_Timer.After then
-    C_Timer.After(HARVEST_GAP * HARVEST_TRIES, function() Meter:Report() end)
-  else
+  -- Completing the key is usually the first moment the amounts are readable at
+  -- all, so harvest before reporting -- and let the harvest itself report if it
+  -- lands later still, rather than printing "no pulls recorded" on a timer.
+  harvest(1)
+  if not Meter.run.reported and #Meter.pulls > 0 then
+    Meter.run.reported = true
     Meter:Report()
   end
 end)
 
-ns.On("CHALLENGE_MODE_RESET", function() Meter.pulls = {}; Meter.run = nil end)
+ns.On("CHALLENGE_MODE_RESET", function()
+  Meter.pulls = {}; Meter.run = nil; Meter.baseline = nil
+end)
 
 ns.On("PLAYER_REGEN_ENABLED", function() harvest(1) end)
 

@@ -80,6 +80,13 @@ SlashCmdList.UNKICKED = function(msg)
     ns.Print(ns.db.pullReport and "reporting kick counts in chat after each pull"
       or "no chat report after pulls")
 
+  elseif cmd == "audit" then
+    -- A real +13 showed 3 deaths in the panel where the combat log had 6 (all
+    -- three of one player's were missing). Nothing on this Mac can tell whether
+    -- that is Blizzard's Deaths list, the deathRecapID filter, or our join, so
+    -- this dumps the raw rows and lets the next run answer it.
+    ns.Meter:Audit()
+
   elseif cmd == "why" then
     ns.Print("what this client allows:")
     if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then

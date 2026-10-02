@@ -662,6 +662,72 @@ do
   eq(#ns.Meter.pulls, 0, "starting another key clears the previous run's pulls")
 end
 
+print("\n[meter] a cumulative session is differenced, not re-counted")
+do
+  -- R-21, from a real +13 (The Blinding Vale, 2026-10-01). C_DamageMeter's
+  -- Current session does NOT reset between pulls inside a key: it spanned the
+  -- whole 24:18 run and its per-player interrupt counts matched the combat log
+  -- exactly. Treating each harvest as a pull would have counted pull one in
+  -- every later pull as well, so the run total is only right if a pull is the
+  -- DIFFERENCE between two snapshots.
+  loadAddon()
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.challenge = { level = 13, mapID = 500, mapName = "The Blinding Vale", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 5, taken = 100, deaths = 0 },
+  }, { duration = 60 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 1, "the first readable snapshot is the first pull")
+  eq(ns.Meter.pulls[1].kicks, 5, "and carries its own numbers")
+
+  -- The session keeps growing rather than restarting.
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 9, taken = 250, deaths = 1 },
+  }, { duration = 150 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 2, "the second pull is recorded")
+  eq(ns.Meter.pulls[2].kicks, 4, "as the DELTA (9 - 5), not the running total")
+  eq(ns.Meter.pulls[2].taken, 150, "damage taken is differenced too")
+  eq(ns.Meter.pulls[2].duration, 90, "and so is the clock")
+
+  local total = ns.Meter:Total()
+  eq(total and total.kicks, 9, "so the run total matches the session, instead of double-counting to 14")
+  eq(total and total.duration, 150, "and the run clock is the session clock")
+end
+
+print("\n[meter] a key where nothing was readable until it ended")
+do
+  -- Also from the real run: amounts stay secret for the whole restricted map,
+  -- not merely while in combat, so every between-pull harvest came back secret
+  -- and ZERO pulls were recorded across an entire dungeon. The panel then showed
+  -- 24:18 of whole-key totals labelled "pull 1". The end-of-key harvest has to
+  -- rescue the run.
+  loadAddon()
+  stub.meter.available = true
+  stub.challenge = { level = 13, mapID = 500, mapName = "The Blinding Vale", deaths = 6 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  stub.meter.secret = true
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 26, taken = 45200000, deaths = 0 },
+  }, { duration = 1458 })
+  for _ = 1, 8 do stub.fire("PLAYER_REGEN_ENABLED") end
+  eq(#ns.Meter.pulls, 0, "nothing is recorded while the map keeps the amounts secret")
+  ok((ns.Meter.blockedHarvests or 0) > 0, "and the refusals are counted, not silently dropped")
+
+  -- The key ends and the restriction lifts.
+  stub.meter.secret = false
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  eq(#ns.Meter.pulls, 1, "completing the key harvests what was never readable before")
+  eq(ns.Meter.pulls[1].kicks, 26, "with the whole key's numbers")
+  ok(ns.Meter.pulls[1].wholeRun == true, "flagged as the whole run rather than one pull")
+  local total = ns.Meter:Total()
+  eq(total and total.kicks, 26, "so the run report is right even with no per-pull harvest")
+end
+
 print("\n[panel] meter mode")
 do
   loadAddon()
@@ -695,7 +761,12 @@ do
       :format(tostring(headY), tostring(rowY)))
   ok(rowY ~= nil and headY ~= nil and math.abs(rowY - headY) >= 16,
     "with a full row of clearance between them")
-  ok(f.seg.text:GetText():find("pull", 1, true) ~= nil, "the header names the segment")
+  -- R-21. The live segment is the KEY so far, never "pull N": measured on a real
+  -- +13, C_DamageMeter's Current session spanned the whole 24:18 run.
+  ok(f.seg.text:GetText():find("key so far", 1, true) ~= nil,
+    ("the header calls the live segment the key so far (%q)"):format(f.seg.text:GetText()))
+  ok(f.seg.text:GetText():find("pull", 1, true) == nil,
+    "and never claims the live view is one pull")
   ok(f.footer:GetText():find("live", 1, true) == nil, "out of combat the footer is not the live one")
 
   -- R-20. Pulls are only harvested inside a key, so outside one the Current

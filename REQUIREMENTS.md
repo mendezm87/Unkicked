@@ -195,6 +195,32 @@ The generator also emits, from the same build:
 | **P-20** | Pulls are numbered **within their run** (`pull.runIndex`), so "pull 3" is the third pull of this key rather than the third segment in the file. Without this, open-world fighting before the key shifts every number in the report. | done |
 | **R-19** | The in-game panel must not look broken on a client where it cannot work. With no combat-log feed the frame **collapses** to its header plus the logging-state line instead of showing a dozen rows that can never fill, says `no combat log in 12.x` in the footer, and prints one line at login stating that it is on screen and how to recentre it (`/uk reset`) — "I saw nothing in the UI" must be distinguishable from "it failed to load". | done — **never rendered in a real 12.x client** (no WoW install on the build machine); covered headlessly only: the file loads, the frame is created and shown, Refresh survives empty data, and the toggle/reset commands work. |
 
+| **R-21** | A pull is the **difference between two readable snapshots** of the same `C_DamageMeter` session, never a snapshot itself. The Current session does not reset between pulls inside a keystone, so recording each harvest whole counts pull one again in every later pull. A session whose totals or clock went *backwards* is a different session and its snapshot stands alone. | done |
+| **R-22** | Amounts on a restricted map stay secret for the **whole map**, not merely while in combat, so a key can end with zero successful harvests. The live segment must therefore never be labelled `pull N` — it is `key so far` / `key total` / `session (no key)` — and completing the key must harvest and report whatever became readable then, even if that is the entire run as one segment. Refused harvests are counted (`/uk audit`). | done |
+| **R-23** | A metric a player is absent from means **zero**, but only when the join was definitive (a GUID match). An identity match that collided stays blank: a confident wrong zero is worse than an empty cell. | done |
+
+## Verified against a real keystone, in game — The Blinding Vale +13 (2026-10-01)
+
+The panel's live per-player interrupt counts, read from `C_DamageMeter` after the
+key, matched `SPELL_INTERRUPT` in that key's own combat log **exactly**:
+
+| Player | Panel | Log |
+|---|---|---|
+| Yoyiek-Mok'Nathal | 26 | 26 |
+| Tun-BleedingHollow | 19 | 19 |
+| Fluffipriest-Sargeras | 12 | 12 |
+| Tutte-Drakkari | 9 | 9 |
+| Wafflezealot-Dalaran | (blank) | 0 |
+
+Session clock 24:18 against the parser's 24:11 in combat — i.e. the Current
+session spanned the **whole key** (R-21), and the panel's `pull 1 24:18` was
+whole-run data under a pull label.
+
+**Open:** the same screenshot showed **3 deaths** where the log has **6** — all
+three of Tun's are missing, while his 19 kicks joined correctly. Cause unknown:
+Blizzard's `Deaths` list, the `deathRecapID ~= 0` filter, or the join. `/uk audit`
+dumps the raw rows so the next key answers it.
+
 ## Verified against a real dungeon log
 
 Build `12.1.0` / `COMBAT_LOG_VERSION 22`, Kings' Rest, 129,216 lines, 4 encounters,

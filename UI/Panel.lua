@@ -421,15 +421,19 @@ local function refreshMeter()
     local r, isPlain = ns.Meter:Rows("current")
     data, plain = r or {}, isPlain ~= false
     local clock = ns.Meter:Clock(ns.Meter:Duration("current") or 0)
-    -- Pulls are only ever harvested inside a keystone (harvest() bails when
-    -- Meter.run is nil), so outside one the Current session is NOT pull N -- it
-    -- is whatever Blizzard has been accumulating since the last meter reset,
-    -- which can be a whole dungeon. Calling that "pull 1" is a lie the panel
-    -- told for 24 minutes on a run with no key in it.
+    -- The live segment is NEVER a pull. C_DamageMeter's Current session was
+    -- measured on a real +13 spanning the entire 24:18 key, and nothing inside a
+    -- restricted map is readable between pulls anyway -- so there is no moment
+    -- at which this view means "the pull in progress". It is the key so far, or
+    -- outside a key whatever Blizzard has accumulated since the last reset.
+    -- Per-pull numbers come from the harvested deltas, in the chat line and the
+    -- run view, not from here.
     if not ns.Meter.run then
       label = ("|cff808080session|r  %s  |cff808080(no key)|r"):format(clock)
+    elseif ns.Meter.run.endedAt then
+      label = ("|cffffd200key total|r  %s"):format(clock)
     else
-      label = ("|cffffd200pull %d|r  %s"):format(#ns.Meter.pulls + 1, clock)
+      label = ("|cffffd200key so far|r  %s"):format(clock)
     end
   end
 

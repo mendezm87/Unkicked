@@ -222,7 +222,8 @@ stub.meter = {
   damageSpells = {},  -- guid -> combatSpells for the DamageTaken metric
 }
 
-function stub.setMeter(which, players)
+function stub.setMeter(which, players, opts)
+  if opts and opts.duration then stub.meter.duration[which] = opts.duration end
   stub.meter.players[which] = players or {}
 end
 
