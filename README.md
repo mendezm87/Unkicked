@@ -50,6 +50,29 @@ cd path\to\Unkicked
 lua parser\unkicked.lua --follow --model
 ```
 
+### Mythic+ only
+
+By default a report covers **the pulls inside a key window and nothing else**. The
+keystone is the only proof of a key — `CHALLENGE_MODE_START` states the level and
+opens the window, `CHALLENGE_MODE_END` closes it. Difficulty 23 in `ZONE_CHANGE` is
+not evidence: a plain Mythic dungeon reads identically and has no `START` line at
+all. So the trash you cleared in the city on the way there, and the pulls inside
+the instance before someone put the stone in, are not in the report.
+
+```powershell
+lua parser\unkicked.lua              # mythic+ keys only (default)
+lua parser\unkicked.lua --all        # every segment, including open world
+```
+
+Anything skipped is named rather than silently dropped:
+
+```
+unkicked: not a mythic+ key, skipped -- Silvermoon City (5 pulls, no keystone)  (--all to include)
+```
+
+Raids are out of scope for now. Interruptibility knowledge is still learned from
+the whole file either way — learning is additive and costs nothing.
+
 ### Current pull vs. the whole run
 
 Like a damage meter's segment toggle:
@@ -104,6 +127,8 @@ With no file argument it looks for `WoWCombatLog.txt` in the usual
 | `--from-start` | with `--follow`, replay what is already in the file first |
 | `--quiet-gap N` | seconds of calm that end a trash pull (default 5) |
 | `--min-damage N` | hide chip-damage casts |
+| `--all` | report every segment, not just mythic+ keys |
+| `--mplus` | mythic+ keys only (the default) |
 | `--model` | append what is believed about each party member's interrupt, and where that number came from |
 | `--json` | one JSON object per pull on stdout, for an overlay or a second monitor |
 | `--knowledge PATH` | the interruptibility knowledge file (see below) |
@@ -238,6 +263,12 @@ forbidden events, and says so. `/uk why` prints what is blocked and why.
 | `/uk immune` | show casts that were immune to interrupts too |
 | `/uk min <n>` | hide casts under *n* damage |
 | `/uk lock` | stop the panel being dragged |
+| `/uk reset` | put the panel back in the middle of the screen and show it |
+
+On 12.x the panel collapses to a small card: its title, and the line that says
+whether the client is writing `WoWCombatLog.txt`. That is deliberate — twelve rows
+that can never fill look like a broken addon. If you cannot see it at all, `/uk
+reset` recentres it.
 
 ## Install
 

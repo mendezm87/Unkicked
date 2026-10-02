@@ -102,7 +102,7 @@ function Totals:add(pull, minDamage)
 
         self.worst[#self.worst + 1] = {
           spell = r.spellName, source = r.srcName or "?", damage = dmg,
-          deaths = deaths, pull = pull.index,
+          deaths = deaths, pull = pull.runIndex or pull.index,
         }
       end
     end

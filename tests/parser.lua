@@ -378,6 +378,57 @@ do
   eq(s3.runs, 2, "the open-world zone between them is not counted as a run")
 end
 
+print("\n[parser] mythic+ only: the key window is read from CHALLENGE_MODE_*")
+do
+  -- The gate the report applies by default. Difficulty 23 is plain Mythic and
+  -- looks identical in ZONE_CHANGE whether a keystone went in or not, so only
+  -- CHALLENGE_MODE_START proves a key -- and only pulls between START and END
+  -- are part of it. Shapes taken from a real Blinding Vale log, which carries a
+  -- stale CHALLENGE_MODE_END for an abandoned key BEFORE its own START.
+  local pulls, runs = {}, {}
+  local ns5 = host.init(".")
+  local s5 = Session.new(ns5, {
+    host = host, quietGap = 5, knowledge = Knowledge.load("/dev/null"),
+    onPull = function(p) pulls[#pulls + 1] = p end,
+    onRun = function(r) runs[#runs + 1] = r end,
+  })
+  local function L(t, body) s5:line(("10/1/2026 %s-7  %s"):format(t, body)) end
+  L("16:00:00.000", "COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.0,PROJECT_ID,1")
+  L("16:00:01.000", "ZONE_CHANGE,0,\"Silvermoon City\",0")
+  L("16:00:02.000", "ENCOUNTER_START,9001,\"Training Dummy\",0,5,0")
+  L("16:00:10.000", "ENCOUNTER_END,9001,\"Training Dummy\",0,5,1,8000")
+  L("16:10:00.000", "ZONE_CHANGE,2859,\"The Blinding Vale\",23")
+  -- the leftover END from a key abandoned before this log began
+  L("16:10:01.000", "CHALLENGE_MODE_END,2859,0,0,0,0.000000,0.000000")
+  L("16:10:02.000", "ENCOUNTER_START,9002,\"Pre-key pull\",23,5,2859")
+  L("16:10:20.000", "ENCOUNTER_END,9002,\"Pre-key pull\",23,5,1,18000")
+  L("16:11:00.000", "CHALLENGE_MODE_START,\"The Blinding Vale\",2859,584,13,[10,9,147]")
+  L("16:11:10.000", "ENCOUNTER_START,9003,\"In-key pull\",23,5,2859")
+  L("16:12:00.000", "ENCOUNTER_END,9003,\"In-key pull\",23,5,1,50000")
+  L("16:30:00.000", "CHALLENGE_MODE_END,2859,1,13,1639266,383.348633,3022.583008")
+  L("16:31:00.000", "ENCOUNTER_START,9004,\"Post-key pull\",23,5,2859")
+  L("16:31:20.000", "ENCOUNTER_END,9004,\"Post-key pull\",23,5,1,20000")
+  s5:flush()
+
+  eq(#pulls, 4, "every pull is still segmented; the gate filters, it does not parse less")
+  local byName = {}
+  for _, p in ipairs(pulls) do byName[p.name] = p end
+  ok(not Session.inKeystone(byName["Training Dummy"]), "an open-world pull is not in a key")
+  ok(not Session.inKeystone(byName["Pre-key pull"]),
+    "nor is a pull inside the instance before the stone went in")
+  ok(Session.inKeystone(byName["In-key pull"]), "a pull between START and END is in the key")
+  ok(not Session.inKeystone(byName["Post-key pull"]), "and one after END is not")
+
+  local key
+  for _, r in ipairs(runs) do if r.zone == "The Blinding Vale" then key = r end end
+  eq(key and key.keystone, 13, "the key level is read from CHALLENGE_MODE_START")
+  ok(key and key.completed, "and the END line says whether it timed")
+  ok(key and key.keyStart and key.keyEnd and key.keyEnd > key.keyStart,
+    "the stale END before the START did not close the window early")
+
+  eq(byName["In-key pull"].runIndex, 2, "pulls are numbered within their own run")
+end
+
 do
   -- A log can start mid-dungeon, with no ZONE_CHANGE to open a run. The pulls
   -- must still be totalled rather than dropped on the floor.

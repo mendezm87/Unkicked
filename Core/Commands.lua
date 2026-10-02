@@ -12,6 +12,7 @@ local function usage()
   print("  /uk model      what the addon believes about each party interrupt")
   print("  /uk data       which build the cooldown and CC tables came from")
   print("  /uk lock       stop the panel being dragged")
+  print("  /uk reset      put the panel back in the middle of the screen and show it")
   print("  /uk immune     show casts that were immune to interrupts too")
   print("  /uk min <n>    hide casts under n damage")
   print("  /uk log        is the client writing WoWCombatLog.txt right now?")
@@ -68,6 +69,10 @@ SlashCmdList.UNKICKED = function(msg)
     print("  The log file WoW writes to disk is unaffected -- post-run analysis of")
     print("  WoWCombatLog.txt can still answer every question this panel wanted to.")
     print("  That file right now: " .. (ns.Logging:Label()))
+
+  elseif cmd == "reset" then
+    ns.Panel:Reset()
+    ns.Print("panel reset to the centre of the screen and shown")
 
   elseif cmd == "lock" then
     ns.db.locked = not ns.db.locked

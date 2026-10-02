@@ -86,26 +86,50 @@ end
 -- ------------------------------------------------------------- event plumbing
 -- Init.lua creates exactly one frame and registers events on it. Capture the
 -- OnEvent script so the test can fire events by name.
+--
+-- The widget itself is permissive: any method you call on it returns it. That is
+-- not a model of the real client -- it cannot prove a frame actually renders --
+-- but it does let UI/Panel.lua be LOADED and driven headlessly, which catches
+-- the class of bug that leaves nothing on screen in game: a nil field, a bad
+-- format string, a method called on a module that was not there yet.
 local onEvent, registered = nil, {}
+stub.frames = {}
 
-CreateFrame = function()
-  local f = {}
-  local noop = function() return f end
-  local methods = {
-    "SetSize", "SetPoint", "SetBackdrop", "SetBackdropColor", "SetBackdropBorderColor",
-    "SetMovable", "EnableMouse", "RegisterForDrag", "Show", "Hide", "StartMoving",
-    "StopMovingOrSizing", "SetWidth", "SetJustifyH", "SetWordWrap", "SetText",
-    "SetScript", "RegisterEvent", "UnregisterEvent", "CreateFontString", "GetPoint",
-    "IsShown", "SetOwner", "AddLine", "AddDoubleLine",
-  }
-  for _, m in ipairs(methods) do f[m] = noop end
-  f.CreateFontString = function() local fs = {}; for _, m in ipairs(methods) do fs[m] = function() return fs end end return fs end
-  f.RegisterEvent = function(_, e) registered[e] = true return f end
-  f.SetScript = function(_, which, fn) if which == "OnEvent" then onEvent = fn end return f end
-  f.IsShown = function() return true end
-  f.GetPoint = function() return "CENTER", nil, nil, 0, 0 end
+local function widget(name)
+  local w = { _name = name, _shown = false, _text = nil, _points = {} }
+  return setmetatable(w, { __index = function(t, k)
+    if k == "Show" then return function() t._shown = true; return t end end
+    if k == "Hide" then return function() t._shown = false; return t end end
+    if k == "IsShown" then return function() return t._shown end end
+    if k == "SetText" then return function(_, v) t._text = v; return t end end
+    if k == "GetText" then return function() return t._text end end
+    if k == "SetSize" then return function(_, w2, h) t._w, t._h = w2, h; return t end end
+    if k == "GetHeight" then return function() return t._h end end
+    if k == "SetPoint" then return function(_, ...) t._points[#t._points + 1] = { ... }; return t end end
+    if k == "GetPoint" then return function() return "CENTER", nil, nil, 0, 0 end end
+    if k == "ClearAllPoints" then return function() t._points = {}; return t end end
+    if k == "CreateFontString" then return function() return widget(name .. "-fs") end end
+    if k == "RegisterEvent" then return function(_, e) registered[e] = true; return t end end
+    if k == "SetScript" then
+      return function(_, which, fn)
+        if which == "OnEvent" then onEvent = fn end
+        t["_" .. which] = fn
+        return t
+      end
+    end
+    return function() return t end
+  end })
+end
+stub.widget = widget
+
+CreateFrame = function(_, name)
+  local f = widget(name or "anon")
+  if name then stub.frames[name] = f end
   return f
 end
+
+GameTooltip = widget("GameTooltip")
+SlashCmdList = {}
 
 function stub.fire(event, ...)
   if onEvent then onEvent(nil, event, ...) end

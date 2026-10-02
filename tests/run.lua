@@ -470,6 +470,54 @@ print = realPrint
 eq(said, 1, "the logging-off reminder fires once per zone, not once per pull")
 stub.instance = nil
 
+-- ===================================================================== the panel
+-- R-19. The in-game panel has never rendered in a real 12.x client -- there is no
+-- WoW install on the build machine -- so this does not prove it looks right. What
+-- it does prove is that the file loads, the frame is created, it is SHOWN by
+-- default, and Refresh() survives being called with no data: the failure modes
+-- that leave an empty screen and no error anyone can read.
+print("\n[panel] it loads, builds and shows itself")
+do
+  for _, f in ipairs({ "UI/Panel.lua", "Core/Commands.lua" }) do
+    local chunk = assert(loadfile(f), "cannot load " .. f)
+    chunk("Unkicked", ns)
+  end
+  ok(ns.Panel ~= nil, "UI/Panel.lua loads outside the game")
+  stub.fire("PLAYER_LOGIN")
+  local f = stub.frames["UnkickedPanel"]
+  ok(f ~= nil, "the panel frame is created at login")
+  ok(f and f:IsShown(), "and shown by default, without needing /uk first")
+
+  -- With no feed the row area can never fill, so the frame collapses instead of
+  -- showing a dozen empty rows that read as a broken addon.
+  ok(ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"], "the combat log event is blocked on this client")
+  local collapsed = f._h
+  ok(collapsed and collapsed < 100, ("the panel collapses with no feed (height %s)"):format(tostring(collapsed)))
+  ns.Panel:Refresh()
+  ok(f._shown, "Refresh with no records does not hide or error out")
+
+  -- The one genuinely load-bearing thing it still reports.
+  stub.logging.on = true
+  stub.logging.advanced = true
+  ns.Logging:Query(true)
+  local label = ns.Logging:Label()
+  ok(label and label:find("log: on", 1, true) ~= nil,
+    ("the panel's bottom line states the logging state (%s)"):format(tostring(label)))
+
+  -- Recovering a panel you cannot see, without wiping SavedVariables.
+  ns.Panel:Toggle(false)
+  ok(not f:IsShown(), "it can be hidden")
+  ns.db.point = { "TOPLEFT", -9000, 9000 }
+  SlashCmdList.UNKICKED("reset")
+  ok(f:IsShown(), "/uk reset shows it again")
+  eq(ns.db.point[1], "CENTER", "and puts it back at a position on screen")
+
+  SlashCmdList.UNKICKED("")
+  ok(not f:IsShown(), "/uk with no argument toggles it")
+  SlashCmdList.UNKICKED("")
+  ok(f:IsShown(), "and back")
+end
+
 -- ============================================================ the offline path
 -- parser/host.lua defines the same client globals this file stubs, so the offline
 -- suite runs in its own process rather than fighting over them. Same interpreter,

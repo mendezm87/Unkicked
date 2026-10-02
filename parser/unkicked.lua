@@ -34,6 +34,10 @@ local opts = {
   -- overall: "current" = per pull only, "overall" = the run total only,
   -- "both" = each pull as it ends plus the total when the run does.
   segment = "both", top = 8,
+  -- What counts. Mythic+ only by default: that is the content the whole model is
+  -- aimed at, and an open-world segment on the way to the key is clutter above
+  -- the report you actually wanted. Raids are deliberately not included yet.
+  scope = "mplus",
   knowledge = HERE .. "/learned-interruptible.lua",
   poll = 1,
 }
@@ -52,6 +56,8 @@ unkicked -- reports the enemy casts nobody stopped, per pull, from WoWCombatLog.
   --overall           report only the end-of-run total
   --both              both (default): each pull, then the total when the run ends
   --top N             rows per section in the overall report (default 8)
+  --all               report every segment, not just mythic+ keys
+  --mplus             mythic+ keys only (default)
   --model             append what we believe about each party member's interrupt
   --json              one JSON object per pull on stdout
   --no-color          plain output
@@ -72,6 +78,8 @@ while i <= #a do
   elseif v == "--current" then opts.segment = "current"
   elseif v == "--overall" then opts.segment = "overall"
   elseif v == "--both" then opts.segment = "both"
+  elseif v == "--all" then opts.scope = "all"
+  elseif v == "--mplus" then opts.scope = "mplus"
   elseif v == "--top" then i = i + 1; opts.top = tonumber(a[i]) or 8
   elseif v == "--no-color" then opts.color = false
   elseif v == "--quiet-gap" then i = i + 1; opts.quietGap = tonumber(a[i]) or 5
@@ -119,6 +127,15 @@ local ns = host.init(ROOT)
 local knowledge = Knowledge.load(opts.knowledge)
 
 local emitted = 0
+local skippedPulls, skippedRuns, reportedRuns = 0, {}, 0
+
+-- The mythic+ gate. Interruptibility knowledge is still learned from every line
+-- in the file -- that is additive and costs nothing -- but only pulls inside a
+-- key window are reported or totalled.
+local function counts(pull)
+  if opts.scope == "all" then return true end
+  return Session.inKeystone(pull)
+end
 local showPulls = opts.segment ~= "overall"
 local showOverall = opts.segment ~= "current"
 
@@ -130,8 +147,9 @@ local session = Session.new(ns, {
   quietGap = opts.quietGap,
   knowledge = knowledge,
   onPull = function(pull)
-    emitted = emitted + 1
     knowledge:save()
+    if not counts(pull) then skippedPulls = skippedPulls + 1; return end
+    emitted = emitted + 1
     if not totals or totals.run ~= pull.run then totals = Totals.new(pull.run) end
     totals:add(pull, opts.minDamage)
     grand:add(pull, opts.minDamage)
@@ -152,6 +170,14 @@ local session = Session.new(ns, {
     io.stdout:flush()
   end,
   onRun = function(run)
+    if opts.scope ~= "all" and not run.keyStart then
+      -- Say what was dropped and why. A report that silently omits the five
+      -- pulls you remember fighting looks broken, even when it is right.
+      skippedRuns[#skippedRuns + 1] = ("%s (%d pulls, no keystone)")
+        :format(run.zone or "?", run.pulls or 0)
+      return
+    end
+    reportedRuns = reportedRuns + 1
     if not (showOverall and totals and totals.run == run) then return end
     if opts.json then
       io.write(report.overallJson(totals), "\n")
@@ -199,17 +225,33 @@ else
   knowledge:save()
   -- Several instances in one file: the per-run reports are the useful ones, but
   -- a file-wide total is what "overall" means if you pointed this at an archive.
-  if showOverall and session.runs > 1 and not grand:empty() then
+  -- A file-wide total only says something new when more than one run was
+  -- actually reported; with the mythic+ gate on, one key makes it a duplicate.
+  if showOverall and reportedRuns > 1 and not grand:empty() then
     if opts.json then
       io.write(report.overallJson(grand), "\n")
     else
       io.write(report.overall(grand, opts), "\n\n")
     end
   end
+  if opts.scope ~= "all" then
+    if #skippedRuns > 0 then
+      io.stderr:write("unkicked: not a mythic+ key, skipped -- "
+        .. table.concat(skippedRuns, "; ") .. "  (--all to include)\n")
+    end
+    if emitted == 0 then
+      io.stderr:write("unkicked: no mythic+ key in this log. A key is proven by a "
+        .. "CHALLENGE_MODE_START line; a plain Mythic dungeon has none. Re-run with "
+        .. "--all to report every segment anyway.\n")
+    end
+  end
   io.stderr:write(("unkicked: %d lines, %d pulls (%d reported), %d interrupts seen, %d spends"
     .. ", %d spells newly proven kickable%s\n"):format(
     session.lines, session.segments, emitted, session.stats.interrupts, session.stats.spends,
     knowledge.learned, session.skipped > 0 and (", " .. session.skipped .. " lines skipped") or ""))
+  if opts.scope ~= "all" and skippedPulls > 0 then
+    io.stderr:write(("unkicked: %d pulls outside a key window were not counted\n"):format(skippedPulls))
+  end
   -- The offline half of the same question the in-game panel answers: a log
   -- written without advanced logging has no unit fields, so there are no damage
   -- amounts and no deaths to attribute. Say so rather than reporting zeroes.

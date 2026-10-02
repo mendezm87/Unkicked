@@ -121,6 +121,21 @@ function Session:closeRun(at)
   if self.onRun then self.onRun(run) end
 end
 
+-- Was this pull part of a mythic+ key?
+--
+-- The keystone is the only ground truth for "this was a +N". Difficulty 23 is
+-- plain Mythic and reads identically in ZONE_CHANGE whether a stone went in or
+-- not -- the Kings' Rest log is difficulty 23 with no CHALLENGE_MODE_START at
+-- all -- so the key is proven by the START line and by nothing else.
+function Session.inKeystone(pull)
+  local run = pull and pull.run
+  if not run or not run.keyStart then return false end
+  local at = pull.startedAt or run.keyStart
+  if at < run.keyStart then return false end
+  if run.keyEnd and at > run.keyEnd then return false end
+  return true
+end
+
 -- A log can begin mid-dungeon -- the client rolls a new file whenever it likes --
 -- so there may never be a ZONE_CHANGE to open the first run with. Rather than
 -- drop every pull before the first zone line, open an implicit run at the first
@@ -160,6 +175,10 @@ function Session:closePull(at, outcome)
   local run = self:ensureRun(pull.startedAt)
   run.pulls = run.pulls + 1
   pull.run = run
+  -- Numbered within its own run, so "pull 3" means the third pull of this key
+  -- rather than the third thing in the file -- a figure that would otherwise
+  -- shift depending on how much open-world fighting preceded the dungeon.
+  pull.runIndex = run.pulls
   pull.kicks = self:kickSnapshot()
   if self.onPull then self.onPull(pull) end
 end
@@ -263,9 +282,29 @@ function Session:line(line)
     local run = self:ensureRun(ts)
     run.keystone = tonumber(f[5])
     run.zone = f[2] or run.zone
+    -- The key window. A mythic+ run is not the same thing as being inside the
+    -- instance: you zone in, chat, repair, and the timer starts whenever someone
+    -- puts the stone in. Only what happens between here and CHALLENGE_MODE_END
+    -- is part of the key, so the boundary is recorded rather than assumed to be
+    -- the zone change.
+    run.keyStart = ts
+    run.keyEnd = nil
     return
   end
-  if event == "MAP_CHANGE" or event == "CHALLENGE_MODE_END" then
+  if event == "CHALLENGE_MODE_END" then
+    self:closePull(ts)
+    local run = self.run
+    -- A stale END for a key abandoned before this log started arrives with all
+    -- zero fields and no START in front of it. Ignore it rather than closing a
+    -- window that never opened.
+    if run and run.keyStart then
+      run.keyEnd = ts
+      run.completed = f[3] == "1"
+      run.keyTimeMs = tonumber(f[5])
+    end
+    return
+  end
+  if event == "MAP_CHANGE" then
     return self:closePull(ts)
   end
 

@@ -98,11 +98,32 @@ local function buildRow(parent, index)
   return row
 end
 
+-- On 12.x there is no combat-log feed, so the row area can never fill: twelve
+-- empty rows read as "broken", and the one thing the panel can still tell you
+-- (is the client writing the log?) gets lost in the middle of them. So the frame
+-- collapses to the header plus the log line when there is no feed.
+local function compact()
+  return ns.blocked and ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] and true or false
+end
+
+local function fullHeight()
+  return 22 + ROW_H * (ns.db.maxRows or 12) + 20 + ROW_H
+end
+
+local function compactHeight()
+  return 22 + ROW_H * 2 + 10
+end
+
+function Panel:Layout()
+  if not frame then return end
+  frame:SetSize(WIDTH, compact() and compactHeight() or fullHeight())
+end
+
 function Panel:Build()
   if frame then return frame end
 
   frame = CreateFrame("Frame", "UnkickedPanel", UIParent, "BackdropTemplate")
-  frame:SetSize(WIDTH, 22 + ROW_H * (ns.db.maxRows or 12) + 20 + ROW_H)
+  frame:SetSize(WIDTH, fullHeight())
   frame:SetPoint(unpack(ns.db.point))
   frame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -164,6 +185,7 @@ function Panel:Build()
   rows = {}
   for i = 1, (ns.db.maxRows or 12) do rows[i] = buildRow(frame, i) end
 
+  self:Layout()
   return frame
 end
 
@@ -171,6 +193,14 @@ function Panel:Refresh()
   if not frame then return end
   local recs = ns.Cast.records
   local shown = 0
+
+  if compact() then
+    for i = 1, #rows do rows[i].rec = nil; rows[i]:Hide() end
+    frame.stat:SetText("")
+    frame.footer:SetText("|cffff2020no combat log in 12.x|r -- parse the log file, |cffffd200/uk why|r")
+    frame.log.text:SetText((ns.Logging and ns.Logging:Label()) or "")
+    return
+  end
 
   for i = 1, #rows do
     local row = rows[i]
@@ -222,6 +252,19 @@ function Panel:Refresh()
   end
 end
 
+-- Recovers a panel you cannot see: back to the default position, unlocked and
+-- shown. A frame dragged off the edge of the screen, or a saved position from a
+-- different resolution, is otherwise unreachable without wiping SavedVariables.
+function Panel:Reset()
+  ns.db.point = { "CENTER", 240, 80 }
+  ns.db.locked = false
+  self:Build()
+  frame:ClearAllPoints()
+  frame:SetPoint(unpack(ns.db.point))
+  self:Layout()
+  self:Toggle(true)
+end
+
 function Panel:Toggle(show)
   self:Build()
   if show == nil then show = not frame:IsShown() end
@@ -233,4 +276,11 @@ ns.On("PLAYER_LOGIN", function()
   Panel:Build()
   if ns.db.showPanel then frame:Show() else frame:Hide() end
   Panel:Refresh()
+  -- Say where it is. With no feed the panel is a small card and easy to miss
+  -- behind another addon, and "I saw nothing in the UI" is indistinguishable
+  -- from "it failed to load" unless the addon says which one happened.
+  if ns.db.showPanel then
+    ns.Print("panel is on screen (" .. tostring(ns.db.point and ns.db.point[1] or "CENTER")
+      .. "). |cffffd200/uk|r toggles it, |cffffd200/uk reset|r recentres it if you cannot see it.")
+  end
 end)

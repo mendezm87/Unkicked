@@ -86,7 +86,7 @@ function M.text(pull, opts)
   for _, r in ipairs(sure) do dmg = dmg + (r.damage or 0) end
 
   out[#out + 1] = ("%s== pull %d  %s  %s  %d unkicked (%s dmg)%s"):format(
-    c.bold, pull.index, label, clock(pull.duration or 0), #sure, short(dmg), c.reset)
+    c.bold, pull.runIndex or pull.index, label, clock(pull.duration or 0), #sure, short(dmg), c.reset)
 
   if #sure == 0 and #unsure == 0 then
     out[#out + 1] = ("  %snothing got through%s"):format(c.green, c.reset)
@@ -275,7 +275,7 @@ function M.json(pull, opts)
   for _, r in ipairs(sure) do emit(r, true) end
   for _, r in ipairs(unsure) do emit(r, false) end
   return ('{"pull":%d,"kind":"%s","name":"%s","duration":%.1f,"outcome":%s,"casts":[%s]}')
-    :format(pull.index, pull.kind, esc(pull.name or ""), pull.duration or 0,
+    :format(pull.runIndex or pull.index, pull.kind, esc(pull.name or ""), pull.duration or 0,
       pull.outcome and ('"' .. esc(pull.outcome) .. '"') or "null", table.concat(parts, ","))
 end
 
