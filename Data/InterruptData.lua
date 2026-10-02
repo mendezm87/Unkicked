@@ -65,7 +65,7 @@ ns.INTERRUPTS = {
   [96231] = {
     name = "Rebuke",
     class = "PALADIN",
-    specs = { "Holy", "Protection", "Retribution" },
+    specs = { "Protection", "Retribution" },
     baseMs = 15000,
     floorMs = 15000,
     eligible = false,
@@ -74,7 +74,7 @@ ns.INTERRUPTS = {
   [116705] = {
     name = "Spear Hand Strike",
     class = "MONK",
-    specs = { "Brewmaster", "Mistweaver", "Windwalker" },
+    specs = { "Brewmaster", "Windwalker" },
     baseMs = 15000,
     floorMs = 15000,
     eligible = false,
@@ -129,7 +129,7 @@ ns.INTERRUPTS = {
   [351338] = {
     name = "Quell",
     class = "EVOKER",
-    specs = { "Devastation", "Preservation", "Augmentation" },
+    specs = { "Devastation", "Augmentation" },
     baseMs = 20000,
     floorMs = 20000,
     eligible = false,
@@ -161,17 +161,26 @@ for id in pairs(ns.INTERRUPTS) do ns.IS_INTERRUPT[id] = true end
 
 -- specID -> the interrupt that spec has. Unusable in game (you cannot read
 -- another player's spec on 12.x) but exact offline: COMBATANT_INFO states it.
+--
+-- spellID = false means that spec HAS NO INTERRUPT, which is not the same as
+-- "we do not know theirs" and must never be reported as a missed chance.
+-- Midnight removed the interrupt from every healing spec except Restoration
+-- shaman (Wind Shear). Corroborated here: the same paladin cast Rebuke 6 times
+-- as Protection (spec 66) in an 08/14 log and 0 times across two full keys once
+-- he was Holy (spec 65), while the model called his kick up for all 98 casts
+-- that got through.
 ns.SPEC_INTERRUPT = {
   [62] = { class = "MAGE", spec = "Arcane", spellID = 2139 },
   [63] = { class = "MAGE", spec = "Fire", spellID = 2139 },
   [64] = { class = "MAGE", spec = "Frost", spellID = 2139 },
-  [65] = { class = "PALADIN", spec = "Holy", spellID = 96231 },
+  [65] = { class = "PALADIN", spec = "Holy", spellID = false },
   [66] = { class = "PALADIN", spec = "Protection", spellID = 96231 },
   [70] = { class = "PALADIN", spec = "Retribution", spellID = 96231 },
   [71] = { class = "WARRIOR", spec = "Arms", spellID = 6552 },
   [72] = { class = "WARRIOR", spec = "Fury", spellID = 6552 },
   [73] = { class = "WARRIOR", spec = "Protection", spellID = 6552 },
   [102] = { class = "DRUID", spec = "Balance", spellID = 78675 },
+  [105] = { class = "DRUID", spec = "Restoration", spellID = false },
   [103] = { class = "DRUID", spec = "Feral", spellID = 106839 },
   [104] = { class = "DRUID", spec = "Guardian", spellID = 106839 },
   [250] = { class = "DEATHKNIGHT", spec = "Blood", spellID = 47528 },
@@ -180,6 +189,8 @@ ns.SPEC_INTERRUPT = {
   [253] = { class = "HUNTER", spec = "Beast Mastery", spellID = 147362 },
   [254] = { class = "HUNTER", spec = "Marksmanship", spellID = 147362 },
   [255] = { class = "HUNTER", spec = "Survival", spellID = 187707 },
+  [256] = { class = "PRIEST", spec = "Discipline", spellID = false },
+  [257] = { class = "PRIEST", spec = "Holy", spellID = false },
   [258] = { class = "PRIEST", spec = "Shadow", spellID = 15487 },
   [259] = { class = "ROGUE", spec = "Assassination", spellID = 1766 },
   [260] = { class = "ROGUE", spec = "Outlaw", spellID = 1766 },
@@ -192,11 +203,11 @@ ns.SPEC_INTERRUPT = {
   [267] = { class = "WARLOCK", spec = "Destruction", spellID = 19647 },
   [268] = { class = "MONK", spec = "Brewmaster", spellID = 116705 },
   [269] = { class = "MONK", spec = "Windwalker", spellID = 116705 },
-  [270] = { class = "MONK", spec = "Mistweaver", spellID = 116705 },
+  [270] = { class = "MONK", spec = "Mistweaver", spellID = false },
   [577] = { class = "DEMONHUNTER", spec = "Havoc", spellID = 183752 },
   [581] = { class = "DEMONHUNTER", spec = "Vengeance", spellID = 183752 },
   [1467] = { class = "EVOKER", spec = "Devastation", spellID = 351338 },
-  [1468] = { class = "EVOKER", spec = "Preservation", spellID = 351338 },
+  [1468] = { class = "EVOKER", spec = "Preservation", spellID = false },
   [1473] = { class = "EVOKER", spec = "Augmentation", spellID = 351338 },
 }
 

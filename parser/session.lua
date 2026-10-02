@@ -194,6 +194,7 @@ function Session:kickSnapshot()
       class = p.class,
       spec = p.spec,
       spell = info and info.name,
+      noInterrupt = p.noInterrupt or false,
       talent = p.talent,
       exact = p.exact or false,
       learned = (not p.exact) and (p.connectMs or p.whiffMs) and true or false,

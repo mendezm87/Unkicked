@@ -469,5 +469,16 @@ do
   has(oj, '"unprovenDeaths":', "and reports unproven-cast deaths rather than hiding them")
 end
 
+do
+  -- R-30: the model footer must say "no interrupt", not "unknown". The two mean
+  -- opposite things -- one is a fact about the spec, the other is a gap in ours.
+  local line = report.text({
+    index = 1, label = "trash", elapsed = 10, records = {},
+    kicks = { { name = "Holyhands", spec = "Holy", noInterrupt = true } },
+  }, { color = false, model = true })
+  has(line, "no interrupt in 12.x", "a spec with no kick is named as such")
+  ok(not line:find("spec unknown"), "and is not confused with an unreadable spec")
+end
+
 print(("\n%d passed, %d failed"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

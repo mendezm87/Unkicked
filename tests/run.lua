@@ -96,6 +96,41 @@ eq(select(1, ns.Kick:StateAt("P-hunt", stub.now())), "unknown", "unbound Hunter 
 spend({ guid = "P-hunt", name = "Arrow" }, 147362)
 eq(ns.Kick.players["P-hunt"].spellID, 147362, "Hunter binds on first observed cast")
 
+-- ====================================== R-30 specs that have no interrupt
+-- Midnight took the interrupt off every healing spec but Restoration shaman. A
+-- spec with no kick is not an unknown and is never a missed chance: the model
+-- called a Holy paladin "up" for all 98 casts that got through two real keys,
+-- which is blame for a button that does not exist.
+print("\n[R-30] a spec with no interrupt is never a chance")
+loadAddon(); freshParty()
+eq(ns.SPEC_INTERRUPT[65].spellID, false, "Holy paladin has no interrupt")
+eq(ns.SPEC_INTERRUPT[270].spellID, false, "Mistweaver has no interrupt")
+eq(ns.SPEC_INTERRUPT[1468].spellID, false, "Preservation evoker has no interrupt")
+eq(ns.SPEC_INTERRUPT[105].spellID, false, "Restoration druid has no interrupt")
+eq(ns.SPEC_INTERRUPT[264].spellID, 57994, "Restoration shaman keeps Wind Shear")
+eq(ns.SPEC_INTERRUPT[66].spellID, 96231, "Protection paladin keeps Rebuke")
+eq(ns.SPEC_INTERRUPT[70].spellID, 96231, "Retribution paladin keeps Rebuke")
+do
+  local p = ns.Kick:SetKnown("P-hpal", 65, {}, "Holyhands")
+  eq(p.spellID, nil, "a Holy paladin binds to no interrupt spell")
+  eq(p.spec, "Holy", "but is still labelled with their spec, not left blank")
+  local state, detail = ns.Kick:StateAt("P-hpal", stub.now())
+  eq(state, "none", "and reports none, not ready")
+  eq(detail, "no interrupt", "stating why, so a report can say it out loud")
+  ns.Kick.players["P-hpal"] = nil
+end
+-- Class alone must not bind the player: paladin has exactly one interrupt, so
+-- the single-candidate shortcut used to hand Rebuke to a Holy paladin.
+loadAddon()
+stub.setParty({ { guid = "P-me", name = "Holyhands", class = "PALADIN", spells = {} } })
+stub.fire("GROUP_ROSTER_UPDATE")
+eq(ns.Kick.players["P-me"].spellID, nil, "a paladin without Rebuke in their book stays unbound")
+eq(select(1, ns.Kick:StateAt("P-me", stub.now())), "none", "and is reported as having none")
+loadAddon()
+stub.setParty({ { guid = "P-me", name = "Protchad", class = "PALADIN", spells = { [96231] = true } } })
+stub.fire("GROUP_ROSTER_UPDATE")
+eq(ns.Kick.players["P-me"].spellID, 96231, "a paladin who does have Rebuke still binds to it")
+
 -- ================================================== R-3 the learning rule
 print("\n[R-3] cooldown learning, downward-only and talent-gated")
 

@@ -56,6 +56,7 @@ It reports facts. It does not name a culprit — see R-7.
 | **R-27** | **The closest thing to a missed kick the live client can produce is a cost, not a count.** `C_DamageMeter` will never say what an enemy was casting or whether it could be interrupted — but the `DamageTaken` drill-down *does* name the spell that hit each player, and the offline parser has already **proven** which spell ids are interruptible (P-4). Mirror that knowledge into `Data/Interruptible.lua` on every parse and intersect the two: the `kickable` column is how much of the damage a player ate came from a spell somebody could have stopped. It must be labelled as damage, never as a number of missed casts — it cannot tell how many casts there were, nor whether a given one was kicked and a later one was not. Out-of-combat only (it needs a readable GUID), so it lands when the pull ends. | done — **never rendered in a real 12.x client** |
 | **R-28** | **The header row and the data rows share one column geometry, laid out once.** They drifted apart and the header — a single right-justified string anchored at row one's y — was drawn directly on top of the first player, which is what the panel actually looked like in game. The header is its own frame on its own line, with a full row of clearance, and a test asserts the two anchors differ. | done — **fixes a defect seen in a real client screenshot** |
 | **R-29** | **Per-pull totals only exist inside a keystone** — `harvest()` bails when no run is open, so outside a key nothing is ever recorded. The Current session therefore is **not** "pull 1"; it is whatever Blizzard has accumulated since the last meter reset, which on a real run was 24:18 of whole-dungeon totals under a label claiming it was the first pull. Outside a key the panel labels it `session (no key)` and the footer says per-pull totals start at `CHALLENGE_MODE_START`. | done |
+| **R-30** | **A spec with no interrupt is a fact, not a gap, and is never a missed chance.** Midnight removed the interrupt from every healing spec except Restoration shaman (Wind Shear): Holy paladin lost Rebuke, Mistweaver lost Spear Hand Strike, Preservation lost Quell. `ns.SPEC_INTERRUPT` therefore carries `spellID = false` for those specs — plus Restoration druid and Discipline/Holy priest, who never had one — and `Kick:StateAt` answers `none`, which is dropped from the availability table entirely rather than counted as `ready`. Binding by **class alone** is not safe for the local player either: paladin has exactly one interrupt, so the single-candidate shortcut handed Rebuke to a Holy paladin; for `player` the spellbook is readable and is the authority, including when the answer is "you have none". | done |
 | **R-18** | Resolve every live `UnitGUID` through `ns.GUID`, which returns nil for a secret. A GUID is only ever used as a table key and indexing a table with a secret is a hard error, not a nil read, so an unusable GUID must mean "no unit" rather than reaching a `t[guid] = v`. | done |
 
 ## ⚠ R-1 … R-10 are not reachable on a 12.x client
@@ -158,6 +159,23 @@ The replacement for the in-game panel. Same model, different feed.
   report never presents an unknown as a fact.
 - The parser needs a Lua interpreter on the machine running it. LuaJIT is what the
   suite runs on; stock Lua 5.1+ also works.
+
+## Healer interrupts in Midnight (corroborated by log, 2026-10-02)
+
+Every healing spec except Restoration shaman lost its interrupt this expansion.
+The evidence in our own logs, for the one case a log could settle:
+
+| Log | Spec | Rebuke casts |
+|---|---|---|
+| 08/14 Kings' Rest | Wafflezealot, **Protection** paladin (66) | 6 |
+| 10/01 Blinding Vale +13 | Wafflezealot, **Holy** paladin (65) | 0 |
+| 10/01 Voidscar Arena +10 | Wafflezealot, **Holy** paladin (65) | 0 |
+
+Same player, same character, interrupt disappears with the spec change — while
+the model credited him an available kick for **all 98** casts that got through
+those two keys. No Mistweaver, Preservation or Restoration druid has appeared in
+any log yet, so for those three the removal is taken from the user's statement
+and not independently confirmed here.
 
 ## Verified against live data (build 12.1.0.69933)
 

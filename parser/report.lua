@@ -103,9 +103,11 @@ function M.text(pull, opts)
     for _, k in ipairs(pull.kicks or {}) do
       local src = k.exact and "from log" or (k.learned and "learned" or "base")
       local cd = k.cdMs and ("%.1fs"):format(k.cdMs / 1000) or "  -  "
+      local spell = k.spell or (k.noInterrupt and "none" or "unknown")
+      local note = k.spell and src or (k.noInterrupt and "no interrupt in 12.x" or "spec unknown")
       out[#out + 1] = ("  %s%-16s %-18s %-18s %5s  %s%s%s"):format(c.dim,
-        k.name, k.spec or k.class or "?", k.spell or "unknown",
-        cd, k.spell and src or "spec unknown", k.talent and (" +" .. k.talent) or "", c.reset)
+        k.name, k.spec or k.class or "?", spell,
+        k.noInterrupt and "  -  " or cd, note, k.talent and (" +" .. k.talent) or "", c.reset)
     end
   end
   return table.concat(out, "\n")

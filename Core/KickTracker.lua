@@ -70,7 +70,12 @@ function Kick:SetKnown(guid, specID, entries, name)
   if spec then
     p.class = spec.class
     p.spec = spec.spec
-    bind(p, spec.spellID)
+    -- spellID == false is a statement, not a gap: this spec HAS no interrupt, so
+    -- it can never be a missed chance. Holding it apart from "spec unknown" is
+    -- the whole point -- a Holy paladin counted as ready is blame for a button
+    -- that does not exist.
+    p.noInterrupt = spec.spellID == false or nil
+    if spec.spellID then bind(p, spec.spellID) end
   end
 
   if not entries or not p.spellID then return p end
@@ -130,14 +135,20 @@ function Kick:Rebuild()
       p.class = select(2, UnitClass(unit))
 
       if not p.spellID then
-        local candidates = byClass[p.class]
-        if candidates and #candidates == 1 then
-          bind(p, candidates[1])
-        elseif unit == "player" then
-          -- For ourselves we know the spec, so resolve the ambiguous classes.
-          for _, id in ipairs(candidates or {}) do
-            if IsPlayerSpell(id) then bind(p, id) break end
+        local candidates = byClass[p.class] or {}
+        if unit == "player" then
+          -- For ourselves the spellbook is readable, so this is exact -- including
+          -- the answer "you do not have one". A class with a single interrupt is
+          -- NOT proof its every spec has it: Midnight left Holy paladins with no
+          -- Rebuke, and binding by class alone blamed them for every cast.
+          p.noInterrupt = true
+          for _, id in ipairs(candidates) do
+            if IsPlayerSpell(id) then p.noInterrupt = nil; bind(p, id) break end
           end
+        elseif #candidates == 1 then
+          -- Another player's spec is unreadable on 12.x, so this is the best we
+          -- can do and it can be wrong for a healer of that class.
+          bind(p, candidates[1])
         end
       end
     end
@@ -202,11 +213,13 @@ end
 --   "down"    on cooldown, with seconds remaining at that moment
 --   "cc"      available but they could not act, with the mechanic
 --   "dead"    not a thing they could have done anything about
+--   "none"    that spec has no interrupt at all -- never a missed chance
 --   "unknown" we could not determine which interrupt they have, or cold start
 function Kick:StateAt(guid, when)
   local p = players[guid]
   if not p then return "unknown" end
   if p.dead then return "dead" end
+  if p.noInterrupt then return "none", "no interrupt" end
 
   local cc = p.cc
   if cc and when >= cc.from and (not cc.until_ or when <= cc.until_) then

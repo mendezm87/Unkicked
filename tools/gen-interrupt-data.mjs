@@ -28,20 +28,33 @@ const ROOT = path.join(HERE, "..");
 // means "this spell is an interrupt" (label 16 is generic -- 16k spells carry it).
 // New interrupts arrive roughly once per expansion; the generator validates every
 // entry against spell data and fails loudly if an ID stops resolving.
+// Specs that HAVE NO INTERRUPT AT ALL. Not a gap in our data -- an answer, and a
+// different one from "we could not tell": a spec listed here can never be a
+// missed chance. Midnight took the interrupt off every healing spec except
+// Restoration shaman, which keeps Wind Shear.
+const NO_INTERRUPT = [
+  { class: "PALADIN", spec: "Holy" },         // lost Rebuke in Midnight
+  { class: "MONK",    spec: "Mistweaver" },   // lost Spear Hand Strike
+  { class: "EVOKER",  spec: "Preservation" }, // lost Quell
+  { class: "DRUID",   spec: "Restoration" },  // never had Skull Bash
+  { class: "PRIEST",  spec: "Discipline" },   // Silence is Shadow-only
+  { class: "PRIEST",  spec: "Holy" },
+];
+
 const INTERRUPTS = [
   { id: 57994,  name: "Wind Shear",         class: "SHAMAN",      specs: ["Elemental", "Enhancement", "Restoration"] },
   { id: 1766,   name: "Kick",               class: "ROGUE",       specs: ["Assassination", "Outlaw", "Subtlety"] },
   { id: 6552,   name: "Pummel",             class: "WARRIOR",     specs: ["Arms", "Fury", "Protection"] },
   { id: 47528,  name: "Mind Freeze",        class: "DEATHKNIGHT", specs: ["Blood", "Frost", "Unholy"] },
   { id: 106839, name: "Skull Bash",         class: "DRUID",       specs: ["Feral", "Guardian"] },
-  { id: 96231,  name: "Rebuke",             class: "PALADIN",     specs: ["Holy", "Protection", "Retribution"] },
-  { id: 116705, name: "Spear Hand Strike",  class: "MONK",        specs: ["Brewmaster", "Mistweaver", "Windwalker"] },
+  { id: 96231,  name: "Rebuke",             class: "PALADIN",     specs: ["Protection", "Retribution"] },
+  { id: 116705, name: "Spear Hand Strike",  class: "MONK",        specs: ["Brewmaster", "Windwalker"] },
   { id: 183752, name: "Disrupt",            class: "DEMONHUNTER", specs: ["Havoc", "Vengeance"] },
   { id: 187707, name: "Muzzle",             class: "HUNTER",      specs: ["Survival"] },
   { id: 147362, name: "Counter Shot",       class: "HUNTER",      specs: ["Beast Mastery", "Marksmanship"] },
   { id: 19647,  name: "Spell Lock",         class: "WARLOCK",     specs: ["Affliction", "Demonology", "Destruction"], pet: true },
   { id: 2139,   name: "Counterspell",       class: "MAGE",        specs: ["Arcane", "Fire", "Frost"] },
-  { id: 351338, name: "Quell",              class: "EVOKER",      specs: ["Devastation", "Preservation", "Augmentation"] },
+  { id: 351338, name: "Quell",              class: "EVOKER",      specs: ["Devastation", "Augmentation"] },
   { id: 15487,  name: "Silence",            class: "PRIEST",      specs: ["Shadow"] },
   { id: 78675,  name: "Solar Beam",         class: "DRUID",       specs: ["Balance"] },
 ];
@@ -269,6 +282,11 @@ async function main() {
       specInterrupt.push({ specID: hit.id, class: r.class, spec: specName, spellID: r.id });
     }
   }
+  for (const n of NO_INTERRUPT) {
+    const hit = specRows.find((s) => s.cls === n.class && s.name === n.spec);
+    if (!hit) throw new Error(`${n.class} spec "${n.spec}" not found in ChrSpecialization`);
+    specInterrupt.push({ specID: hit.id, class: n.class, spec: n.spec, spellID: false });
+  }
   specInterrupt.sort((a, b) => a.specID - b.specID);
 
   // --- emit -----------------------------------------------------------------
@@ -339,6 +357,14 @@ function renderLua(build, results, specInterrupt) {
   L.push("");
   L.push("-- specID -> the interrupt that spec has. Unusable in game (you cannot read");
   L.push("-- another player's spec on 12.x) but exact offline: COMBATANT_INFO states it.");
+  L.push("--");
+  L.push("-- spellID = false means that spec HAS NO INTERRUPT, which is not the same as");
+  L.push("-- \"we do not know theirs\" and must never be reported as a missed chance.");
+  L.push("-- Midnight removed the interrupt from every healing spec except Restoration");
+  L.push("-- shaman (Wind Shear). Corroborated here: the same paladin cast Rebuke 6 times");
+  L.push("-- as Protection (spec 66) in an 08/14 log and 0 times across two full keys once");
+  L.push("-- he was Holy (spec 65), while the model called his kick up for all 98 casts");
+  L.push("-- that got through.");
   L.push("ns.SPEC_INTERRUPT = {");
   for (const s of specInterrupt) {
     L.push(`  [${s.specID}] = { class = "${s.class}", spec = ${JSON.stringify(s.spec)}, spellID = ${s.spellID} },`);
