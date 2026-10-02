@@ -481,6 +481,51 @@ do
 end
 
 do
+  -- P-23: a report is a table, so every cell must stay inside its column. A long
+  -- spell name used to run straight into the caster column ("Xal'atath's Bargain:
+  -- Devour Xal'atath" in a real log), and a 25-character realm-qualified name in
+  -- the 20-wide model column shoved the spec, spell and cooldown right.
+  local pull = {
+    index = 1, runIndex = 1, kind = "trash", duration = 10, startedAt = 0,
+    records = {
+      { spellID = 1, spellName = "Xal'atath's Bargain: Devour the Unworthy",
+        srcName = "Xal'atath", completedAt = 5, damage = 1000,
+        interruptible = true, kicks = {} },
+    },
+    kicks = {
+      { name = "Brucellosis-Ghostlands-US", spec = "Unholy", spell = "Mind Freeze",
+        cdMs = 12000, exact = true, talent = "Coldthirst" },
+    },
+  }
+  local out = report.text(pull, { color = false, model = true })
+  local cast = out:match("\n(  0:05[^\n]*)")
+  ok(cast and cast:find("Xal'atath", 30, true), "a long spell name is truncated, not run into the caster column")
+  -- Compared by display column, not byte offset: the ellipsis trunc() appends is
+  -- three bytes, so a byte index would pass for the wrong reason.
+  local function specColumn(name)
+    local p2 = { index = 1, runIndex = 1, kind = "trash", duration = 10, startedAt = 0,
+      records = {}, kicks = { { name = name, spec = "Unholy", spell = "Mind Freeze",
+        cdMs = 12000, exact = true } } }
+    local line = report.text(p2, { color = false, model = true }):match("\n(  %S+ +Unholy[^\n]*)")
+    if not line then return nil end
+    local head = line:sub(1, line:find("Unholy", 1, true) - 1)
+    return #(head:gsub("\xE2\x80\xA6", ".")) -- ellipsis counts as one column
+  end
+  eq(specColumn("Brucellosis-Ghostlands-US"), specColumn("Mandi"),
+    "a long player name is truncated so the spec column stays put")
+
+  -- The model is the same five rows under every pull unless a read changed, so it
+  -- prints once rather than ten times in a ten-pull key.
+  local opts = { color = false, model = true }
+  local first = report.text(pull, opts)
+  local second = report.text(pull, opts)
+  has(first, "Mind Freeze", "the model prints under the first pull")
+  ok(not second:find("Mind Freeze", 1, true), "and is not repeated under the next when nothing moved")
+  pull.kicks[1].cdMs = 11000
+  has(report.text(pull, opts), "Mind Freeze", "but reappears the moment a cooldown read changes")
+end
+
+do
   -- R-31, the parser half of the segment picker. The in-game panel got a
   -- dropdown; the CLI cannot re-select a pull it has already printed, so it gets
   -- a flag. Driven through the actual CLI rather than the module, because the

@@ -59,7 +59,7 @@ local function row(c, r, t0)
   -- second is normal (a real pack had two Hexes at 0:18 from different GUIDs), and
   -- without the source those read as a duplicated row rather than two casts.
   local line = ("  %s%s  %-26s %-22s %s%8s%s"):format(
-    c.dim, clock(r.completedAt - t0), r.spellName, trunc(r.srcName or "?", 22),
+    c.dim, clock(r.completedAt - t0), trunc(r.spellName or "?", 26), trunc(r.srcName or "?", 22),
     c.bold, short(r.damage or 0), c.reset)
   if #deaths > 0 then
     line = line .. ("  %sKILLED %s%s"):format(c.red, table.concat(deaths, ", "), c.reset)
@@ -100,14 +100,26 @@ function M.text(pull, opts)
   end
 
   if opts.model then
+    local model = {}
     for _, k in ipairs(pull.kicks or {}) do
       local src = k.exact and "from log" or (k.learned and "learned" or "base")
       local cd = k.cdMs and ("%.1fs"):format(k.cdMs / 1000) or "  -  "
       local spell = k.spell or (k.noInterrupt and "none" or "unknown")
       local note = k.spell and src or (k.noInterrupt and "no interrupt in 12.x" or "spec unknown")
-      out[#out + 1] = ("  %s%-16s %-18s %-18s %5s  %s%s%s"):format(c.dim,
-        k.name, k.spec or k.class or "?", spell,
+      -- Names are truncated to the column, not merely left-padded: a 25-character
+      -- "Brucellosis-Ghostlands-US" in a 16-wide field shoves every later column
+      -- right and the table stops being a table.
+      model[#model + 1] = ("  %s%-20s %-18s %-18s %5s  %s%s%s"):format(c.dim,
+        trunc(k.name, 20), k.spec or k.class or "?", spell,
         k.noInterrupt and "  -  " or cd, note, k.talent and (" +" .. k.talent) or "", c.reset)
+    end
+    -- The model only changes when a spec, cooldown or talent read changes, so
+    -- repeating all five rows under every pull is ten copies of one fact. Print it
+    -- the first time and then only when it actually moved.
+    local sig = table.concat(model, "\n")
+    if sig ~= "" and sig ~= opts.modelSeen then
+      opts.modelSeen = sig
+      for _, line in ipairs(model) do out[#out + 1] = line end
     end
   end
   return table.concat(out, "\n")
