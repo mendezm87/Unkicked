@@ -32,6 +32,10 @@ local DEFAULTS = {
   includeUnknown = true,     -- keep casts whose interruptibility we could not read
   maxRows = 12,
   segment = "current",       -- which segment the panel shows: current pull or the key
+  -- Which column the panel sorts by, and which way. "kicks"/desc is the order
+  -- the panel has always had, because that is the order the Interrupts metric
+  -- comes back in.
+  sort = { by = "kicks", desc = true },
   pullReport = true,         -- one chat line of kick counts after each pull
   point = { "CENTER", 240, 80 },
   locked = false,

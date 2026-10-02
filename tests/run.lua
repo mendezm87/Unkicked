@@ -1025,6 +1025,150 @@ do
   stub.meter.secret = false
 end
 
+-- ================================================= sortable columns (R-32)
+-- "If they are columns you should be able to click on the column to sort and
+-- toggle asc/desc."
+--
+-- The hard half is that during a pull the amounts are SECRET: comparing two of
+-- them is not merely wrong, it errors. So there are two orderings, and the point
+-- of these tests is that the panel picks the right one and never claims an order
+-- it could not apply.
+print("\n[panel] clicking a column to sort it")
+do
+  loadAddon()
+  stub.meter.available = true
+  stub.meter.secret = false
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+
+  -- Deliberately three different orderings: most kicks is Kicker, most damage
+  -- taken is Healer, the only deaths are Selfy's. A single sort cannot satisfy
+  -- all three, which is the whole reason the column is clickable.
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE",  icon = 12, guid = "P-k", kicks = 5, taken = 100000, deaths = 0 },
+    { name = "Healer", class = "PRIEST", icon = 11, guid = "P-h", kicks = 1, taken = 900000, deaths = 0 },
+    { name = "Selfy",  class = "MAGE",   icon = 13, guid = "P-s", kicks = 2, taken = 250000, deaths = 2, isYou = true },
+  })
+  local f = ns.Panel:Build()
+
+  -- Reported by name where there is one and by class where there is not: in
+  -- combat the NAME is secret too, and this helper has to be able to read an
+  -- order the panel itself is only allowed to display.
+  local BY_CLASS = { ROGUE = "Kicker", PRIEST = "Healer", MAGE = "Selfy" }
+  local function order()
+    local out = {}
+    for _, r in ipairs(ns.Panel.rows) do
+      if r:IsShown() and r.player then
+        local p = r.player
+        out[#out + 1] = (p.name ~= nil and not ns.IsSecret(p.name) and p.name)
+          or BY_CLASS[p.class] or "?"
+      end
+    end
+    return table.concat(out, ",")
+  end
+
+  ns.db.segment = "current"
+  ns.db.sort = nil
+  ns.Panel:Refresh()
+  eq(order(), "Kicker,Selfy,Healer", "the default order is still most kicks first")
+
+  eq(select(1, ns.Panel:SortBy("taken")), "taken", "clicking a heading sorts by that column")
+  eq(order(), "Healer,Selfy,Kicker", "most damage taken first")
+  local by, desc = ns.Panel:SortBy("taken")
+  eq(desc, false, "clicking the same heading again flips the direction")
+  eq(order(), "Kicker,Selfy,Healer", "least damage taken first")
+  eq(ns.db.sort.by, "taken", "and the choice is remembered across sessions")
+
+  ns.Panel:SortBy("died")
+  eq(order(), "Selfy,Kicker,Healer", "sorting by deaths puts the player who died on top")
+  ns.Panel:SortBy("name")
+  eq(order(), "Selfy,Kicker,Healer", "a name column sorts Z-A on the first click")
+  ns.Panel:SortBy("name")
+  eq(order(), "Healer,Kicker,Selfy", "and A-Z on the second")
+
+  -- The heading has to SAY which column is sorted and which way, or the panel is
+  -- an order with no label on it.
+  ns.Panel:SortBy("kicks")
+  ok(f.head.c2:GetText():find("v", 1, true) ~= nil,
+    ("the sorted heading carries the direction (%q)"):format(f.head.c2:GetText()))
+  ok(f.head.c4:GetText():find("v", 1, true) == nil, "and the others do not")
+  ns.Panel:SortBy("kicks")
+  ok(f.head.c2:GetText():find("^", 1, true) ~= nil, "flipped, the arrow flips with it")
+
+  eq(ns.Panel:SortBy("nonsense"), nil, "a column that does not exist is refused, not stored")
+  eq(ns.db.sort.by, "kicks", "leaving the stored column alone")
+
+  -- -------------------------------------------------- in combat: no value reads
+  -- Position in the metric's own list is the only ranking available, and
+  -- reversing a list of positions still reads no value -- so ascending works
+  -- mid-pull too.
+  stub.meter.secret = true
+  ns.db.sort = { by = "taken", desc = true }
+  local okRefresh, err = pcall(function() ns.Panel:Refresh() end)
+  ok(okRefresh, ("sorting mid-pull does not compare a secret (%s)"):format(tostring(err)))
+  eq(order(), "Healer,Selfy,Kicker", "mid-pull it ranks by the metric's list position")
+  ns.db.sort = { by = "taken", desc = false }
+  ns.Panel:Refresh()
+  eq(order(), "Kicker,Selfy,Healer", "and reversing positions is still not reading a value")
+
+  -- A column with no live value must not pretend. kickable is derived from the
+  -- per-spell drill-down, which cannot run against a secret GUID at all.
+  ns.db.sort = { by = "kickable", desc = true }
+  ns.Panel:Refresh()
+  ok(f.head.c5:GetText():find("kickable-", 1, true) ~= nil,
+    ("an unapplied sort shows a dash, never an arrow (%q)"):format(f.head.c5:GetText()))
+  ok(f.footer:GetText():find("sort by kickable", 1, true) ~= nil,
+    ("and the footer says why (%q)"):format(f.footer:GetText()))
+
+  -- A name can be secret independently of the numbers beside it -- observed on
+  -- the real Voidscar +10 -- so a name sort is refused rather than guessed.
+  stub.meter.secret = false
+  stub.meter.secretNames = true
+  ns.db.sort = { by = "name", desc = true }
+  ns.Panel:Refresh()
+  ok(f.footer:GetText():find("sort by name", 1, true) ~= nil,
+    ("an unreadable name refuses a name sort (%q)"):format(f.footer:GetText()))
+  stub.meter.secretNames = false
+
+  -- Deaths are COUNTED rows rather than an amount, so the count itself is never
+  -- secret and this column does sort mid-pull. But the join behind it can still
+  -- be indefinite: with the GUID secret the fallback is class+spec icon, and a
+  -- player who appears in the Deaths list TWICE collides with himself, so his
+  -- count comes back blank rather than wrong. A blank sorts with the zeroes, so
+  -- mid-pull he does not rise to the top of a deaths sort -- and once the pull
+  -- ends and the GUID is readable, he does.
+  stub.meter.secret = true
+  ns.db.sort = { by = "died", desc = true }
+  ns.Panel:Refresh()
+  eq(order(), "Kicker,Healer,Selfy",
+    "mid-pull a twice-died player cannot be joined, so he sorts with the zeroes")
+  stub.meter.secret = false
+
+  -- Out of combat the same column sorts normally, which is the regime that
+  -- matters: a pull is only ever harvested once the values are readable.
+  ns.db.sort = { by = "died", desc = true }
+  ns.Panel:Refresh()
+  eq(order(), "Selfy,Kicker,Healer", "once the pull ends, deaths sort like any other column")
+
+  ok(pcall(SlashCmdList.UNKICKED, "sort taken asc"), "/uk sort reaches the same place")
+  eq(ns.db.sort.by, "taken", "by column")
+  eq(ns.db.sort.desc, false, "and by direction")
+  ok(pcall(SlashCmdList.UNKICKED, "sort nonsense"), "/uk sort on a bad column lists the real ones")
+  eq(ns.db.sort.by, "taken", "without changing anything")
+
+  -- The headings are only controls where there is something to sort: an
+  -- invisible button over a blank heading that rewrites a stored preference is
+  -- worse than no button.
+  ns.db.sort = { by = "kicks", desc = true }
+  stub.meter.available = false
+  ns.Panel:Refresh()
+  eq(f.head.btn.kicks:IsShown(), false, "with no live feed the headings are not controls")
+  stub.meter.available = true
+  ns.Panel:Refresh()
+  eq(f.head.btn.kicks:IsShown(), true, "and they come back with it")
+end
+
 -- ============================================================ the offline path
 -- parser/host.lua defines the same client globals this file stubs, so the offline
 -- suite runs in its own process rather than fighting over them. Same interpreter,

@@ -20,6 +20,7 @@ local function usage()
   print("  /uk overall    panel shows the whole key")
   print("  /uk pull <n>   panel shows pull n (see /uk segments)")
   print("  /uk segments   list every segment the panel can show")
+  print("  /uk sort <col> [asc|desc]  sort the panel; or click a column heading")
   print("  /uk pulls      toggle the one-line chat report after each pull")
   print("  /uk log        is the client writing WoWCombatLog.txt right now?")
   print("  /uk log on|off set combat logging (same as /combatlog)")
@@ -86,6 +87,27 @@ SlashCmdList.UNKICKED = function(msg)
     else
       ns.Panel:Segment("pull:" .. n)
       ns.Print("panel showing %s", (ns.Meter:SegmentLabel(ns.db.segment)) or ns.db.segment)
+    end
+
+  elseif cmd == "sort" then
+    -- Same thing the column headings do, for anyone who would rather type it.
+    local col, dir = tostring(arg):match("^(%S+)%s*(%S*)$")
+    if not col or not ns.Meter:Column(col) then
+      local names = {}
+      for _, c in ipairs(ns.Meter.COLUMNS) do names[#names + 1] = c.key end
+      ns.Print("sort by which column? %s", table.concat(names, ", "))
+    else
+      if dir == "asc" or dir == "desc" then
+        ns.db.sort = { by = col, desc = (dir == "desc") }
+        ns.Panel:Refresh()
+      else
+        ns.Panel:SortBy(col)
+      end
+      local by, desc = ns.Meter:SortSpec()
+      ns.Print("panel sorted by %s, %s", by, desc and "descending" or "ascending")
+      if ns.Panel.sortNote then
+        print("  |cffff9933" .. ns.Panel.sortNote .. "|r")
+      end
     end
 
   elseif cmd == "segments" then

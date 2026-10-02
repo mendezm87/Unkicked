@@ -57,6 +57,11 @@ unkicked -- reports the enemy casts nobody stopped, per pull, from WoWCombatLog.
   --both              both (default): each pull, then the total when the run ends
   --pull N[,N...]     report only these pulls (by their number in the run)
   --top N             rows per section in the overall report (default 8)
+  --sort COL          order the overall tables by COL -- every table that has it
+                      spells/casters: damage casts deaths name
+                      players:        up cd cc unknown name
+                      worst casts:    damage deaths pull spell
+  --asc, --desc       sort direction (default: largest first, names A-Z)
   --all               report every segment, not just mythic+ keys
   --mplus             mythic+ keys only (default)
   --model             append what we believe about each party member's interrupt
@@ -91,6 +96,17 @@ while i <= #a do
     end
   elseif v == "--all" then opts.scope = "all"
   elseif v == "--mplus" then opts.scope = "mplus"
+  elseif v == "--sort" then
+    i = i + 1
+    local col = tostring(a[i] or ""):lower()
+    if not Totals.sortable(col) then
+      io.stderr:write(("--sort wants one of: %s\n"):format(table.concat(Totals.columns(), ", ")))
+      os.exit(2)
+    end
+    opts.sort = opts.sort or {}
+    opts.sort.by = col
+  elseif v == "--asc" then opts.sort = opts.sort or {}; opts.sort.asc = true
+  elseif v == "--desc" then opts.sort = opts.sort or {}; opts.sort.asc = false
   elseif v == "--top" then i = i + 1; opts.top = tonumber(a[i]) or 8
   elseif v == "--no-color" then opts.color = false
   elseif v == "--quiet-gap" then i = i + 1; opts.quietGap = tonumber(a[i]) or 5

@@ -109,53 +109,134 @@ function Totals:add(pull, minDamage)
   end
 end
 
+-- ------------------------------------------------------------------- sorting
+-- Which column each table can be ordered by.
+--
+-- A column name applies to EVERY table that has it: --sort damage orders both
+-- the spell table and the worst-cast list, which is what a reader means by it.
+-- The requested column is only the FIRST key -- ties still break the way that
+-- table always broke them, so two casts with equal damage keep a stable order
+-- instead of shuffling between runs.
+local COLUMNS = {
+  spells  = { damage = "damage", casts = "count", deaths = "deaths", name = "name" },
+  sources = { damage = "damage", casts = "count", name = "name" },
+  players = { up = "chances", cd = "down", cc = "cc", unknown = "unknown", name = "name" },
+  worst   = { damage = "damage", deaths = "deaths", pull = "pull", name = "spell",
+              spell = "spell" },
+}
+M.COLUMNS = COLUMNS
+
+-- Every column name --sort accepts, for the usage text and for rejecting a typo
+-- rather than silently ignoring it.
+function M.columns()
+  local seen, out = {}, {}
+  for _, t in pairs(COLUMNS) do
+    for col in pairs(t) do
+      if not seen[col] then seen[col] = true; out[#out + 1] = col end
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+function M.sortable(col)
+  for _, t in pairs(COLUMNS) do if t[col] then return true end end
+  return false
+end
+
+-- A text column reads naturally A-Z and a number reads naturally largest first,
+-- so the default direction depends on the column; --asc/--desc overrides it.
+local TEXT = { name = true, spell = true }
+
+local function fieldFor(which, sort)
+  if not (sort and sort.by) then return nil end
+  local t = COLUMNS[which]
+  return t and t[sort.by] or nil
+end
+
+local function ascending(field, sort)
+  if sort.asc ~= nil then return sort.asc end
+  return TEXT[field] == true
+end
+
+-- The label a report puts on a section it reordered, so a table that is not in
+-- its default order says which order it IS in rather than looking wrong.
+function Totals:sortTag(which, sort)
+  local field = fieldFor(which, sort)
+  if not field then return "" end
+  return (" %s %s"):format(sort.by, ascending(field, sort) and "asc" or "desc")
+end
+
+local function arrange(which, rows, tie, sort)
+  local field = fieldFor(which, sort)
+  if not field then table.sort(rows, tie); return rows end
+  local asc = ascending(field, sort)
+
+  table.sort(rows, function(a, b)
+    local x, y = a[field], b[field]
+    if x == y then return tie(a, b) end
+    if x == nil then return false end
+    if y == nil then return true end
+    if type(x) == "string" or type(y) == "string" then
+      x, y = tostring(x):lower(), tostring(y):lower()
+    end
+    if x == y then return tie(a, b) end
+    if asc then return x < y end
+    return x > y
+  end)
+  return rows
+end
+
 -- Sorted views, built on demand so :add stays cheap in --follow mode.
-function Totals:topSpells(n)
+function Totals:topSpells(n, sort)
   local out = {}
   for id, s in pairs(self.spells) do
     out[#out + 1] = { spellID = id, name = s.name, count = s.count, damage = s.damage, deaths = s.deaths }
   end
-  table.sort(out, function(a, b)
+  arrange("spells", out, function(a, b)
     if a.damage ~= b.damage then return a.damage > b.damage end
     return (a.name or "") < (b.name or "")
-  end)
+  end, sort)
   while n and #out > n do table.remove(out) end
   return out
 end
 
-function Totals:topSources(n)
+function Totals:topSources(n, sort)
   local out = {}
   for name, s in pairs(self.sources) do
     out[#out + 1] = { name = name, count = s.count, damage = s.damage }
   end
-  table.sort(out, function(a, b)
+  arrange("sources", out, function(a, b)
     if a.damage ~= b.damage then return a.damage > b.damage end
     return a.name < b.name
-  end)
+  end, sort)
   while n and #out > n do table.remove(out) end
   return out
 end
 
-function Totals:byPlayer()
+function Totals:byPlayer(sort)
   local out = {}
   for name, p in pairs(self.players) do
     out[#out + 1] = { name = name, chances = p.chances, down = p.down, cc = p.cc, unknown = p.unknown }
   end
-  table.sort(out, function(a, b)
+  arrange("players", out, function(a, b)
     if a.chances ~= b.chances then return a.chances > b.chances end
     return a.name < b.name
-  end)
+  end, sort)
   return out
 end
 
-function Totals:topCasts(n)
+function Totals:topCasts(n, sort)
   local out = {}
   for i, c in ipairs(self.worst) do out[i] = c end
-  table.sort(out, function(a, b)
+  -- Default: deaths before damage. "Worst" means a cast that killed somebody
+  -- ranks above a bigger one that did not, which is why this list can read as
+  -- unsorted by damage -- use --sort damage to order it purely by size.
+  arrange("worst", out, function(a, b)
     if a.deaths ~= b.deaths then return a.deaths > b.deaths end
     if a.damage ~= b.damage then return a.damage > b.damage end
     return (a.spell or "") < (b.spell or "")
-  end)
+  end, sort)
   while n and #out > n do table.remove(out) end
   return out
 end

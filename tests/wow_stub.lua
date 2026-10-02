@@ -283,10 +283,12 @@ local function sourcesFor(which, attr)
   end
   -- The API returns the list ALREADY SORTED by the metric asked for; position in
   -- the list is the only ranking available when the amounts are secret.
-  if attr == E.Interrupts then
+  local rankBy = (attr == E.Interrupts and "kicks")
+    or (attr == E.DamageTaken and "taken") or nil
+  if rankBy then
     local src = stub.meter.players[which] or {}
     local order = {}
-    for i, p in ipairs(src) do order[i] = { p.kicks or 0, out[i] } end
+    for i, p in ipairs(src) do order[i] = { p[rankBy] or 0, out[i] } end
     table.sort(order, function(a, b) return a[1] > b[1] end)
     local sorted = {}
     for i, o in ipairs(order) do sorted[i] = o[2] end

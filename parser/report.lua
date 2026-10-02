@@ -166,7 +166,7 @@ function M.overall(t, opts)
     out[#out + 1] = ("  %snothing got through all run%s"):format(c.green, c.reset)
   end
 
-  local spells = t:topSpells(opts.top or 8)
+  local spells = t:topSpells(opts.top or 8, opts.sort)
   if #spells > 0 then
     -- Two different spell ids can carry the same name -- The Blinding Vale has two
     -- "Light Bolt"s (1235616 and 1238063) -- and two rows with one label read as a
@@ -177,7 +177,7 @@ function M.overall(t, opts)
       if seen[n] and seen[n] ~= sp.spellID then dupe[n] = true end
       seen[n] = sp.spellID
     end
-    out[#out + 1] = ("  %s-- by spell --%s"):format(c.dim, c.reset)
+    out[#out + 1] = ("  %s-- by spell --%s%s"):format(c.dim, t:sortTag("spells", opts.sort), c.reset)
     for _, sp in ipairs(spells) do
       local label = sp.name or "?"
       if dupe[label] then label = ("%s (%d)"):format(label, sp.spellID or 0) end
@@ -189,9 +189,9 @@ function M.overall(t, opts)
     end
   end
 
-  local sources = t:topSources(opts.top or 8)
+  local sources = t:topSources(opts.top or 8, opts.sort)
   if #sources > 1 then
-    out[#out + 1] = ("  %s-- by caster --%s"):format(c.dim, c.reset)
+    out[#out + 1] = ("  %s-- by caster --%s%s"):format(c.dim, t:sortTag("sources", opts.sort), c.reset)
     for _, sp in ipairs(sources) do
       out[#out + 1] = ("  %-28s %s%8s%s  %s%2d cast%s%s"):format(
         trunc(sp.name, 28), c.bold, short(sp.damage), c.reset,
@@ -199,22 +199,22 @@ function M.overall(t, opts)
     end
   end
 
-  local players = t:byPlayer()
+  local players = t:byPlayer(opts.sort)
   if #players > 0 then
     -- R-7: this is a count of chances, not of failures. The log cannot see
     -- whether a player was in range of the caster or busy keeping the group
     -- alive, so the header says chances and the verdict stays with the human.
-    out[#out + 1] = ("  %s-- interrupt available when a cast got through (chances, not blame) --%s")
-      :format(c.dim, c.reset)
+    out[#out + 1] = ("  %s-- interrupt available when a cast got through (chances, not blame) --%s%s")
+      :format(c.dim, t:sortTag("players", opts.sort), c.reset)
     for _, p in ipairs(players) do
       out[#out + 1] = ("  %-20s %s%3d up%s  %s%3d on cd   %3d cc   %3d unknown%s"):format(
         trunc(p.name, 20), c.yellow, p.chances, c.reset, c.dim, p.down, p.cc, p.unknown, c.reset)
     end
   end
 
-  local worst = t:topCasts(opts.top or 5)
+  local worst = t:topCasts(opts.top or 5, opts.sort)
   if #worst > 0 then
-    out[#out + 1] = ("  %s-- worst single casts --%s"):format(c.dim, c.reset)
+    out[#out + 1] = ("  %s-- worst single casts --%s%s"):format(c.dim, t:sortTag("worst", opts.sort), c.reset)
     for _, w in ipairs(worst) do
       out[#out + 1] = ("  %spull %-3d%s %-26s %-20s %s%8s%s%s"):format(
         c.dim, w.pull, c.reset, trunc(w.spell or "?", 26), trunc(w.source, 20),

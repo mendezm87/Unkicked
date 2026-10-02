@@ -197,18 +197,19 @@ local function indexOf(which, attr, countOnly)
   local list = s and s.combatSources
   if not list then return nil end
 
-  local idx = { byGuid = {}, byIdentity = {}, countGuid = {}, countIdentity = {}, dupe = {} }
+  local idx = { byGuid = {}, byIdentity = {}, countGuid = {}, countIdentity = {}, dupe = {},
+                posGuid = {}, posIdentity = {} }
   for i = 1, #list do
     local src = list[i]
     local counts = (not countOnly) or isRealDeath(src)
     local guid = ns.Plain(src.guid)
     local ident = identityOf(src)
     if guid ~= nil then
-      if idx.byGuid[guid] == nil then idx.byGuid[guid] = src end
+      if idx.byGuid[guid] == nil then idx.byGuid[guid] = src; idx.posGuid[guid] = i end
       if counts then idx.countGuid[guid] = (idx.countGuid[guid] or 0) + 1 end
     end
     if ident then
-      if idx.byIdentity[ident] == nil then idx.byIdentity[ident] = src
+      if idx.byIdentity[ident] == nil then idx.byIdentity[ident] = src; idx.posIdentity[ident] = i
       else idx.dupe[ident] = true end
       if counts then idx.countIdentity[ident] = (idx.countIdentity[ident] or 0) + 1 end
     end
@@ -220,6 +221,20 @@ local function lookup(idx, row)
   if not idx then return nil end
   if row.guid ~= nil and idx.byGuid[row.guid] then return idx.byGuid[row.guid] end
   if row.identity and not idx.dupe[row.identity] then return idx.byIdentity[row.identity] end
+  return nil
+end
+
+-- WHERE a row sat in one metric's list.
+--
+-- This is the only ranking that exists while the amounts are secret, and it is
+-- the ranking Blizzard's own meter draws: the API returns combatSources ALREADY
+-- SORTED by the metric asked for, so position IS the order. Carrying it per row
+-- is what lets a column header sort the panel mid-pull without ever comparing a
+-- value the addon is not allowed to read.
+local function lookupPos(idx, row)
+  if not idx then return nil end
+  if row.guid ~= nil and idx.posGuid[row.guid] ~= nil then return idx.posGuid[row.guid] end
+  if row.identity and not idx.dupe[row.identity] then return idx.posIdentity[row.identity] end
   return nil
 end
 
@@ -330,10 +345,129 @@ function Meter:Rows(which)
     row.taken = t and t.totalAmount or (definite and iTaken and 0 or nil)
     local d = lookupCount(iDeaths, row)
     row.deaths = d or (definite and iDeaths and 0 or nil)
+    -- Rank, not value: usable in combat, when the value is not.
+    row.rank = { kicks = lookupPos(iKicks, row), taken = lookupPos(iTaken, row) }
     if ns.IsSecret(row.kicks) or ns.IsSecret(row.taken) then secret = true end
   end
 
   return mergeByName(rows), not secret
+end
+
+-- ------------------------------------------------------------------- sorting
+-- Sorting a table of numbers the addon is not allowed to read.
+--
+-- Out of combat the amounts are plain and this is an ordinary table.sort. During
+-- a pull they are secret: comparing two of them is not merely wrong, it errors.
+-- So there is a second ordering that needs no comparison at all -- the POSITION
+-- each row held in its metric's list, which Blizzard returns already sorted by
+-- that metric. Reversing a list of positions is still not reading a value, so
+-- ascending works mid-pull too.
+--
+-- Three columns, three answers:
+--   kicks / taken  -- value when plain, list position when secret
+--   died           -- always sortable: it is a count of rows, never an amount
+--   kickable       -- plain by construction (derived from the drill-down), so it
+--                     simply has nothing to sort during a pull
+--   name           -- a name can be secret independently of the numbers beside
+--                     it (observed on the Voidscar +10), so it is refused
+--                     rather than guessed at
+Meter.COLUMNS = {
+  { key = "name",     label = "who",      field = "name" },
+  { key = "kicks",    label = "kicks",    field = "kicks", rank = "kicks" },
+  { key = "died",     label = "died",     field = "deaths" },
+  { key = "taken",    label = "taken",    field = "taken", rank = "taken" },
+  { key = "kickable", label = "kickable", field = "kickable" },
+}
+
+local COL = {}
+for _, c in ipairs(Meter.COLUMNS) do COL[c.key] = c end
+
+function Meter:Column(key) return COL[key or ""] end
+
+-- The stored sort, with the default being the order the panel has always had:
+-- the Interrupts list, which is kicks descending.
+function Meter:SortSpec()
+  local s = ns.db and ns.db.sort
+  local by = (s and COL[s.by or ""] and s.by) or "kicks"
+  local desc = true
+  if s and s.desc == false then desc = false end
+  return by, desc
+end
+
+local function plainNumber(v)
+  if v == nil then return nil, true end
+  if ns.IsSecret(v) then return nil, false end
+  return tonumber(v), true
+end
+
+-- Returns rows, applied, note. `rows` is always a fresh list, so a stored pull
+-- never has its own order rewritten underneath it.
+function Meter:Sort(rows, by, desc)
+  local out, ord = {}, {}
+  for i, r in ipairs(rows or {}) do out[i] = r; ord[r] = i end
+  local function stable(a, b) return (ord[a] or 0) < (ord[b] or 0) end
+
+  local col = COL[by or ""]
+  if not col then return out, false, "no such column" end
+  if #out < 2 then return out, true end
+
+  if col.key == "name" then
+    for _, r in ipairs(out) do
+      if r.name == nil or ns.IsSecret(r.name) then
+        return out, false, "a name here is not readable yet"
+      end
+    end
+    table.sort(out, function(a, b)
+      local x, y = tostring(a.name):lower(), tostring(b.name):lower()
+      if x == y then return stable(a, b) end
+      if desc then return x > y end
+      return x < y
+    end)
+    return out, true
+  end
+
+  local value, readable, any = {}, true, false
+  for _, r in ipairs(out) do
+    local v, ok = plainNumber(r[col.field])
+    if not ok then readable = false; break end
+    if v ~= nil then any = true end
+    value[r] = v
+  end
+
+  -- A column that is empty for every row cannot order anything, and an arrow
+  -- over it would claim an order the rows are not in. kickable is the real case:
+  -- it is derived from the per-spell drill-down, which cannot run during a pull.
+  if readable and not any then
+    return out, false, (col.label .. " is empty -- nothing to order by")
+  end
+
+  if readable then
+    table.sort(out, function(a, b)
+      -- A player absent from a metric scored nothing in it, so nil sorts with
+      -- the zeroes rather than jumping to the top.
+      local x = value[a] or -math.huge
+      local y = value[b] or -math.huge
+      if x == y then return stable(a, b) end
+      if desc then return x > y end
+      return x < y
+    end)
+    return out, true
+  end
+
+  if not col.rank then
+    return out, false, (col.label .. " has no value until the pull ends")
+  end
+
+  table.sort(out, function(a, b)
+    -- Position 1 is the TOP of a descending list, so descending == ascending
+    -- rank. A row missing from this metric's list goes last either way.
+    local x = (a.rank and a.rank[col.rank]) or math.huge
+    local y = (b.rank and b.rank[col.rank]) or math.huge
+    if x == y then return stable(a, b) end
+    if desc then return x < y end
+    return x > y
+  end)
+  return out, true, "by list position -- the amounts cannot be read in combat"
 end
 
 -- --------------------------------------------- what the party ate that was kickable

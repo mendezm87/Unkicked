@@ -313,6 +313,33 @@ function Panel:Build()
   frame.head:SetSize(WIDTH - 16, ROW_H)
   layoutColumns(frame.head, "GameFontDisableSmall")
 
+  -- The headings are buttons: click a column to sort by it, click it again to
+  -- flip the direction. One button per column rather than one for the strip, so
+  -- the hit area is exactly the column it labels.
+  frame.head.btn = {}
+  for i, col in ipairs((ns.Meter and ns.Meter.COLUMNS) or {}) do
+    local b = CreateFrame("Button", nil, frame.head)
+    b:SetAllPoints(frame.head["c" .. i])
+    b.sortKey = col.key
+    b:SetScript("OnClick", function(self) Panel:SortBy(self.sortKey) end)
+    b:SetScript("OnEnter", function(self)
+      local by, desc = ns.Meter:SortSpec()
+      GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+      GameTooltip:AddLine("Sort by " .. col.label, 1, 1, 1)
+      GameTooltip:AddLine(self.sortKey == by
+        and ("click to flip to " .. (desc and "ascending" or "descending"))
+        or "click to sort by this column", 0.7, 0.7, 0.7)
+      if Panel.sortNote then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(Panel.sortNote, 1, 0.6, 0.2)
+      end
+      GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    frame.head.btn[col.key] = b
+  end
+  Panel.headButtons = frame.head.btn
+
   frame.footer = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   frame.footer:SetPoint("BOTTOMLEFT", 8, 6 + ROW_H)
   frame.footer:SetPoint("BOTTOMRIGHT", -8, 6 + ROW_H)
@@ -446,6 +473,44 @@ function Panel:Segment(which)
   return ns.db.segment
 end
 
+-- ------------------------------------------------------------------- sorting
+-- Only meter mode has value columns to sort, so the hit areas are off in the
+-- other two -- an invisible button over a blank heading that silently rewrites
+-- a stored preference is worse than no button.
+local function headButtons(show)
+  if not (frame and frame.head and frame.head.btn) then return end
+  for _, b in pairs(frame.head.btn) do
+    if show then b:Show() else b:Hide() end
+  end
+end
+
+-- Inactive columns keep the colour they always had, so the strip does not
+-- suddenly read as five live controls.
+local HEAD_COLOR = { kickable = "|cffff9933" }
+
+local function headLabel(key, by, desc, applied)
+  local col = ns.Meter and ns.Meter:Column(key)
+  local label = (col and col.label) or key
+  if key ~= by then
+    return ("%s%s|r"):format(HEAD_COLOR[key] or "|cff808080", label)
+  end
+  -- A requested sort that could not be applied gets a dash, not an arrow: the
+  -- arrow is a claim about the order of the rows below it.
+  local mark = applied and (desc and "v" or "^") or "-"
+  return ("|cffffd200%s%s|r"):format(label, mark)
+end
+
+-- Click the same column again to flip the direction; a different one starts
+-- descending, which is what "show me the most" means for every column here.
+function Panel:SortBy(col)
+  if not (ns.Meter and ns.Meter:Column(col)) then return nil end
+  local by, desc = ns.Meter:SortSpec()
+  if by == col then desc = not desc else by, desc = col, true end
+  ns.db.sort = { by = by, desc = desc }
+  self:Refresh()
+  return by, desc
+end
+
 local function hideRows(from)
   for i = from, #rows do
     rows[i].rec, rows[i].player = nil, nil
@@ -458,6 +523,7 @@ local function refreshFeed()
   local recs = ns.Cast.records
   local shown = 0
 
+  headButtons(false)
   setCols(frame.head)
   for i = 1, rowCount("feed") do
     local row = rows[i]
@@ -536,8 +602,21 @@ local function refreshMeter()
   data = data or {}
 
   frame.seg.text:SetText(("%s%s|r |cff808080v|r"):format(segColor(kind), label))
-  setCols(frame.head, "", "|cff808080kicks|r", "|cff808080died|r",
-    "|cff808080taken|r", "|cffff9933kickable|r")
+
+  -- Sorted here, not in Meter:View: the order is a property of this panel's
+  -- headings, and the same rows are handed unchanged to the chat report.
+  local by, desc = ns.Meter:SortSpec()
+  local sorted, applied, note = ns.Meter:Sort(data, by, desc)
+  data = sorted
+  Panel.sortNote = (not applied) and note or nil
+  Panel.sortedBy, Panel.sortedDesc = by, desc
+  headButtons(true)
+  setCols(frame.head,
+    headLabel("name", by, desc, applied),
+    headLabel("kicks", by, desc, applied),
+    headLabel("died", by, desc, applied),
+    headLabel("taken", by, desc, applied),
+    headLabel("kickable", by, desc, applied))
 
   -- Only the two live-by-type segments can drill down per spell; a harvested
   -- pull and a past session cannot (no by-id variant of the call exists).
@@ -576,6 +655,10 @@ local function refreshMeter()
   -- failure mode worth designing against.
   if stale then
     frame.footer:SetText(("|cffff9933%s is gone -- showing the live segment|r"):format(stale))
+  elseif not applied then
+    -- Say which order the rows are ACTUALLY in, rather than leaving the heading
+    -- to imply one that was never applied.
+    frame.footer:SetText(("|cffff9933sort by %s: %s|r"):format(by, note or "not available"))
   elseif kind == "pull" or kind == "session" then
     frame.footer:SetText("|cff808080a finished segment -- click the heading for the list|r")
   elseif shown == 0 then
@@ -592,6 +675,7 @@ end
 -- ----------------------------------------------------------------- blind mode
 local function refreshBlind()
   hideRows(1)
+  headButtons(false)
   frame.seg.text:SetText("")
   setCols(frame.head)
   frame.footer:SetText("|cffff2020no feed on this client|r -- |cffffd200/uk why|r")

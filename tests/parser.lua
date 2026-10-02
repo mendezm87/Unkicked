@@ -345,6 +345,53 @@ do
   eq(ranked:topSpells(1)[1].name, "Big", "spells rank by damage")
   eq(ranked:topSources(1)[1].name, "B", "so do casters")
 
+  -- -------------------------------------------------- --sort COL (P-24)
+  -- Every overall table can be ordered by any column it actually has, so the
+  -- report answers "which spell was cast MOST" as well as "which did the most
+  -- damage" -- two different questions the default order can only answer one of.
+  local many = Totals.new({})
+  many:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 20, spellName = "Chip", srcName = "A", damage = 30, interruptible = true, deaths = {}, kicks = {} },
+    { spellID = 20, spellName = "Chip", srcName = "A", damage = 30, interruptible = true, deaths = {}, kicks = {} },
+    { spellID = 20, spellName = "Chip", srcName = "A", damage = 30, interruptible = true, deaths = {}, kicks = {} },
+    { spellID = 21, spellName = "Nuke", srcName = "B", damage = 900, interruptible = true, deaths = {}, kicks = {} },
+  } }, 0)
+  eq(many:topSpells(nil)[1].name, "Nuke", "the default is still most damage first")
+  eq(many:topSpells(nil, { by = "casts" })[1].name, "Chip", "--sort casts asks the other question")
+  eq(many:topSpells(nil, { by = "casts", asc = true })[1].name, "Nuke", "--asc flips it")
+  eq(many:topSpells(nil, { by = "name" })[1].name, "Chip", "a text column defaults to A-Z, not largest-first")
+  eq(many:topSpells(nil, { by = "nonsense" })[1].name, "Nuke",
+    "a column this table does not have leaves its own order alone")
+  eq(many:topSources(nil, { by = "casts" })[1].name, "A", "casters take the same columns")
+
+  -- The reordered section says which order it is in, or a table that looks
+  -- wrong is indistinguishable from one that is.
+  local sortedTxt = report.overall(many, { color = false, sort = { by = "casts" } })
+  has(sortedTxt, "-- by spell -- casts desc", "a reordered section names the order it is in")
+  local plainTxt = report.overall(many, { color = false })
+  ok(plainTxt:find("casts desc", 1, true) == nil, "and the default order says nothing")
+
+  -- Sorting changes what is PRINTED, never what was counted.
+  local function totalLine(txt) return (txt:match("(%d+ unkicked cast[^\n]*)")) end
+  eq(totalLine(sortedTxt), totalLine(plainTxt),
+    "reordering a table does not change the run total above it")
+
+  -- "worst" defaults to deaths before damage, which is why it can read as
+  -- unsorted by damage. --sort damage is the way to ask for pure size.
+  local lethal = Totals.new({})
+  lethal:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 30, spellName = "Killer", srcName = "A", damage = 100, interruptible = true,
+      deaths = { Bob = 100 }, kicks = {} },
+    { spellID = 31, spellName = "Bigger", srcName = "B", damage = 500, interruptible = true,
+      deaths = {}, kicks = {} },
+  } }, 0)
+  eq(lethal:topCasts(nil)[1].spell, "Killer", "by default a cast that killed someone ranks first")
+  eq(lethal:topCasts(nil, { by = "damage" })[1].spell, "Bigger", "--sort damage orders by pure size")
+
+  eq(Totals.sortable("casts"), true, "the CLI can check a column name before using it")
+  eq(Totals.sortable("nonsense"), false, "and reject a typo rather than ignoring it")
+  ok(#Totals.columns() > 0, "and list the real ones for the error message")
+
   -- Chances, not blame (R-7): the per-player column counts availability.
   local who = Totals.new({})
   who:add({ index = 1, kind = "trash", duration = 10, records = {
@@ -554,6 +601,14 @@ do
   local two = run("--pull 1,2")
   has(two, "== pull 1", "a comma list selects several")
   has(two, "== pull 2", "both of them")
+
+  -- --sort, through the CLI: a typo has to be refused at the argument, not
+  -- silently ignored, or the report quietly answers a different question.
+  has(run("--sort casts"), "casts desc", "--sort reaches the report")
+  local bad = run("--sort nonsense")
+  has(bad, "--sort wants one of", "a column that does not exist is refused")
+  has(bad, "casts", "and the error names the ones that do")
+  has(run("--sort casts --asc"), "casts asc", "--asc reaches it too")
 end
 
 print(("\n%d passed, %d failed"):format(pass, fail))

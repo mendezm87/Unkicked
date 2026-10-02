@@ -88,6 +88,8 @@ lua parser\unkicked.lua --both      # default: each pull, then the run total
 lua parser\unkicked.lua --current   # pulls only
 lua parser\unkicked.lua --overall   # the run total only
 lua parser\unkicked.lua --pull 7    # just pull 7 (the run total still covers them all)
+lua parser\unkicked.lua --sort casts        # order the tables by cast count, not damage
+lua parser\unkicked.lua --sort damage --desc # worst casts by pure size, ignoring deaths
 lua parser\unkicked.lua --overall --top 5
 ```
 
@@ -268,6 +270,7 @@ prints exactly which parts of the old design the client still refuses.
 | `/uk kicks` | interrupts pressed per player, this pull and this key |
 | `/uk current` / `/uk overall` | panel shows the live segment, or the whole key |
 | `/uk segments` | list every segment the panel can show |
+| `/uk sort <col> [asc\|desc]` | sort the panel — or just click the column heading |
 | `/uk pull <n>` | panel shows pull *n* |
 | `/uk pulls` | toggle the one-line chat report after each pull |
 | `/uk` | toggle the panel |
