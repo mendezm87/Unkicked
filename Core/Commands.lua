@@ -15,6 +15,10 @@ local function usage()
   print("  /uk reset      put the panel back in the middle of the screen and show it")
   print("  /uk immune     show casts that were immune to interrupts too")
   print("  /uk min <n>    hide casts under n damage")
+  print("  /uk kicks      interrupts pressed per player, this pull and this key")
+  print("  /uk current    panel shows the current pull")
+  print("  /uk overall    panel shows the whole key")
+  print("  /uk pulls      toggle the one-line chat report after each pull")
   print("  /uk log        is the client writing WoWCombatLog.txt right now?")
   print("  /uk log on|off set combat logging (same as /combatlog)")
   print("  /uk why        why the addon reports nothing on this client")
@@ -54,6 +58,28 @@ SlashCmdList.UNKICKED = function(msg)
     ns.Print("combat log: %s", (ns.Logging:Label()))
     for _, l in ipairs(ns.Logging:Lines()) do print("  " .. l.text) end
 
+  elseif cmd == "kicks" then
+    if not ns.Meter:Available() then
+      ns.Print("C_DamageMeter is not available on this client, so there is no live view at all")
+    else
+      ns.Meter:Report()
+      local snap = ns.Meter:Snapshot("current")
+      if snap then
+        print(("  this pull: %d kicks, %d deaths, %s taken")
+          :format(snap.kicks, snap.deaths, ns.Short(snap.taken)))
+      else
+        print("  this pull: in combat -- the numbers are secret until it ends")
+      end
+    end
+
+  elseif cmd == "current" or cmd == "overall" then
+    ns.Print("panel showing %s", ns.Panel:Segment(cmd) == "overall" and "the whole key" or "this pull")
+
+  elseif cmd == "pulls" then
+    ns.db.pullReport = not ns.db.pullReport
+    ns.Print(ns.db.pullReport and "reporting kick counts in chat after each pull"
+      or "no chat report after pulls")
+
   elseif cmd == "why" then
     ns.Print("what this client allows:")
     if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then
@@ -66,6 +92,17 @@ SlashCmdList.UNKICKED = function(msg)
     print("  value that addon code may hold but never compare or test.")
     print("  Restrictions active right now: " ..
       (ns.Restricted() and "|cffff2020yes|r" or "|cff40c860no|r"))
+    if ns.Meter:Available() then
+      print("  |cff40c860C_DamageMeter|r -- the sanctioned replacement. The server aggregates")
+      print("  and hands back a finished list, so per-player |cffffd200interrupts|r, deaths and")
+      print("  damage taken DO work live, per pull and per key. In combat the amounts")
+      print("  are secret values that can be shown but not read, which is why the")
+      print("  panel can display them and still not be able to sort or total them.")
+      print("  What it cannot give: whether an enemy cast was interruptible, or which")
+      print("  cast got through. Those are not in the API. |cffffd200/uk kicks|r for the live view.")
+    else
+      print("  |cffff2020C_DamageMeter|r -- not available, so there is no live view either.")
+    end
     print("  The log file WoW writes to disk is unaffected -- post-run analysis of")
     print("  WoWCombatLog.txt can still answer every question this panel wanted to.")
     print("  That file right now: " .. (ns.Logging:Label()))

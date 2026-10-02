@@ -28,8 +28,8 @@ local function loadAddon()
   ns = {}
   local files = {
     "Data/InterruptData.lua", "Data/CCData.lua",
-    "Core/Init.lua", "Core/Logging.lua", "Core/Nameplates.lua", "Core/KickTracker.lua",
-    "Core/CastTracker.lua",
+    "Core/Init.lua", "Core/Logging.lua", "Core/Meter.lua", "Core/Nameplates.lua",
+    "Core/KickTracker.lua", "Core/CastTracker.lua",
   }
   for _, f in ipairs(files) do
     local chunk = assert(loadfile(f), "cannot load " .. f)
@@ -516,6 +516,167 @@ do
   ok(not f:IsShown(), "/uk with no argument toggles it")
   SlashCmdList.UNKICKED("")
   ok(f:IsShown(), "and back")
+end
+
+
+-- ======================================================= C_DamageMeter (R-19)
+-- The one live feed 12.x left. Everything here is about the four ways the real
+-- API punishes a naive reader: secret amounts, a deaths metric that is a list,
+-- session enum values that are not 0/1, and an empty Current session mid-fight.
+print("\n[meter] C_DamageMeter -- the live per-player view")
+do
+  loadAddon()
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+
+  eq(ns.Meter:Available(), false, "with no C_DamageMeter there is no live view")
+  stub.meter.available = true
+  eq(ns.Meter:Available(), true, "and it reports available once the client has it")
+
+  -- kicks deliberately out of order: the API hands back a SORTED list and
+  -- position is the only ranking that exists when amounts cannot be compared.
+  stub.setMeter("current", {
+    { name = "Healer",  class = "PRIEST",  icon = 11, guid = "P-h", kicks = 0, taken = 400000, deaths = 0 },
+    { name = "Kicker",  class = "ROGUE",   icon = 12, guid = "P-k", kicks = 5, taken = 100000, deaths = 0 },
+    { name = "Selfy",   class = "MAGE",    icon = 13, guid = "P-s", kicks = 2, taken = 250000, deaths = 2, isYou = true },
+  })
+  stub.setMeter("overall", {
+    { name = "Kicker",  class = "ROGUE",   icon = 12, guid = "P-k", kicks = 99, taken = 1, deaths = 0 },
+  })
+
+  local rows, plain = ns.Meter:Rows("current")
+  ok(rows ~= nil and #rows == 3, ("one row per player who was there (got %s)")
+    :format(rows and #rows or "nil"))
+  eq(plain, true, "out of combat the amounts are plain, so they can be totalled")
+  eq(rows[1].name, "Kicker", "rank is list position -- the API's own ordering, not ours")
+  eq(rows[1].kicks, 5, "and the interrupt count comes off that row")
+
+  -- A healer who kicked nothing still has to be on screen with a zero, or the
+  -- panel is reporting who scored rather than who was in the group.
+  local healer
+  for _, r in ipairs(rows) do if r.name == "Healer" then healer = r end end
+  ok(healer ~= nil, "a player with zero interrupts is still listed")
+  eq(healer and healer.kicks, 0, "with an explicit zero, not a blank")
+  eq(healer and healer.deaths, 0, "and no deaths")
+
+  -- Deaths is a LIST of deaths; reading totalAmount there gives 0 for someone
+  -- who died and nothing for someone who did not.
+  local you
+  for _, r in ipairs(rows) do if r.isYou then you = r end end
+  ok(you ~= nil, "the local player's row is identifiable (isLocalPlayer is never secret)")
+  eq(you and you.deaths, 2, "two deaths means two rows in the Deaths metric, counted not summed")
+
+  -- Session values are 7/8 in the stub on purpose: a module that hardcoded 0/1
+  -- would read the wrong session and this would come back as the current one.
+  local orows = ns.Meter:Rows("overall")
+  eq(orows and #orows, 1, "the overall session is a different list")
+  eq(orows and orows[1] and orows[1].kicks, 99, "so the session enum is asked, never assumed")
+
+  -- Post-reset: Current comes back empty while the data sits in a session
+  -- addressed by id. Without the fallback the panel blanks during combat.
+  stub.meter.emptyCurrent = true
+  local recovered = ns.Meter:Rows("current")
+  eq(recovered and #recovered, 3, "an empty Current session falls back to the newest session by id")
+  stub.meter.emptyCurrent = false
+
+  -- ------------------------------------------------------------- secret values
+  stub.meter.secret = true
+  local srows, splain = ns.Meter:Rows("current")
+  eq(splain, false, "in combat the amounts are secret, so nothing may be totalled")
+  ok(srows ~= nil and #srows == 3, "but the rows still exist -- a secret can be displayed")
+  ok(ns.IsSecret(srows[1].kicks), "and the amount is carried raw, never read")
+  eq(ns.Meter:Snapshot("current"), nil, "Snapshot refuses to invent numbers from secrets")
+  -- Handing a secret GUID back to the API errors in the real client and takes
+  -- the whole draw down, so it must never be attempted.
+  eq(ns.Meter:Spells("current", srows[1].guid), nil,
+    "the per-spell call refuses a secret GUID instead of erroring")
+  stub.meter.secret = false
+
+  -- ------------------------------------------------------------- the key ledger
+  stub.challenge = { level = 13, mapID = 500, mapName = "The Blinding Vale", deaths = 3 }
+  stub.fire("CHALLENGE_MODE_START")
+  eq(#ns.Meter.pulls, 0, "a fresh key starts with no pulls")
+  eq(ns.Meter.run and ns.Meter.run.level, 13, "and records the keystone level from the client")
+
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 1, "a pull is harvested when combat ends, where the numbers go plain")
+  eq(ns.Meter.pulls[1].kicks, 7, "with the pull's total interrupts")
+
+  -- A segment nobody did anything in is not a pull; numbering has to stay stable
+  -- enough to say out loud.
+  stub.setMeter("current", {
+    { name = "Healer", class = "PRIEST", icon = 11, guid = "P-h", kicks = 0, taken = 0, deaths = 0 },
+  })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 1, "an empty segment is not recorded as a pull")
+
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 3, taken = 10, deaths = 0 },
+    { name = "Selfy",  class = "MAGE",  icon = 13, guid = "P-s", kicks = 1, taken = 10, deaths = 1, isYou = true },
+  })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 2, "the next real pull is recorded")
+
+  local total = ns.Meter:Total()
+  eq(total and total.pulls, 2, "the run total covers the pulls inside the key")
+  eq(total and total.kicks, 11, "summing interrupts across pulls (7 + 4)")
+  eq(total and total.rows[1] and total.rows[1].name, "Kicker",
+    "most interrupts first -- legal here because a snapshot is plain by construction")
+  eq(total and total.rows[1].kicks, 8, "Kicker's 5 and 3 add up")
+  eq(total and total.deaths, 3, "deaths accumulate too")
+
+  -- The key's own counter can disagree with ours; it is reported beside our
+  -- number rather than replacing it.
+  eq(ns.Meter:KeyDeaths(), 3, "the client's keystone death count is readable")
+
+  -- A new key wipes the ledger rather than blending two runs.
+  stub.fire("CHALLENGE_MODE_START")
+  eq(#ns.Meter.pulls, 0, "starting another key clears the previous run's pulls")
+end
+
+print("\n[panel] meter mode")
+do
+  loadAddon()
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 4, taken = 100, deaths = 0 },
+    { name = "Selfy",  class = "MAGE",  icon = 13, guid = "P-s", kicks = 0, taken = 900, deaths = 1, isYou = true },
+  })
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+
+  local f = stub.frames["UnkickedPanel"]
+  ok(f._h and f._h > 100, ("with a meter the panel is a real list, not a 2-line card (height %s)")
+    :format(tostring(f._h)))
+  ok(f.footer:GetText():find("missed casts", 1, true) ~= nil,
+    "and says plainly that it counts kicks pressed, not casts missed")
+  ok(f.seg.text:GetText():find("pull", 1, true) ~= nil, "the header names the segment")
+  ok(f.footer:GetText():find("live", 1, true) == nil, "out of combat the footer is not the live one")
+
+  eq(ns.Panel:Segment(), "overall", "clicking the segment switches to the whole key")
+  ok(f.seg.text:GetText():find("run", 1, true) ~= nil, "and the header follows")
+  SlashCmdList.UNKICKED("current")
+  eq(ns.db.segment, "current", "/uk current switches back")
+
+  -- The crash that matters: a refresh during combat, when every amount is a
+  -- secret value that may be handed to a widget but never formatted or compared.
+  stub.meter.secret = true
+  local okRefresh, err = pcall(function() ns.Panel:Refresh() end)
+  ok(okRefresh, ("a refresh mid-pull survives secret amounts (%s)"):format(tostring(err)))
+  -- And says it is the live view, which is the honest label: these numbers are
+  -- being displayed without ever having been read.
+  ok(f.footer:GetText():find("live", 1, true) ~= nil,
+    ("mid-pull the footer marks it live (%s)"):format(tostring(f.footer:GetText())))
+  stub.meter.secret = false
+
+  -- Both commands have to be safe in combat too: /uk kicks is the one a player
+  -- types while something is going wrong.
+  stub.meter.secret = true
+  ok(pcall(SlashCmdList.UNKICKED, "kicks"), "/uk kicks survives secret amounts")
+  ok(pcall(SlashCmdList.UNKICKED, "why"), "/uk why survives secret amounts")
+  stub.meter.secret = false
 end
 
 -- ============================================================ the offline path

@@ -189,6 +189,148 @@ C_CVar = {
   end,
 }
 
+
+-- -------------------------------------------------------------- C_DamageMeter
+-- The sanctioned replacement for the combat-log feed (12.0.0+). The parts that
+-- matter to a test are the ones that are easy to get wrong in the real client:
+--   * in combat every amount, the name and the GUID are SECRET; classFilename,
+--     specIconID, isLocalPlayer and deathRecapID are NeverSecret
+--   * Deaths is one entry PER DEATH, and only counts when deathRecapID ~= 0
+--   * the session enum values are not guaranteed to be 0/1
+--   * the Current session can come back empty while a fresh one holds the data
+Enum = Enum or {}
+-- Deliberately NOT 0/1: a module that hardcodes the numbers must fail here.
+Enum.DamageMeterSessionType = { Current = 7, Overall = 8, Expired = 9 }
+Enum.DamageMeterType = {
+  DamageDone = 1, HealingDone = 2, Absorbs = 3, DamageTaken = 4,
+  AvoidableDamageTaken = 5, Interrupts = 6, Dispels = 7, Deaths = 8,
+  EnemyDamageTaken = 9,
+}
+Enum.AddOnRestrictionType = Enum.AddOnRestrictionType or {}
+
+-- which -> list of { name, class, icon, guid, kicks, taken, deaths, isYou }
+-- Off by default so the existing "no feed at all" tests keep describing a client
+-- with neither feed nor meter; the meter tests turn it on explicitly.
+stub.meter = {
+  available = false,
+  secret = false,
+  emptyCurrent = false,   -- reproduces the post-reset empty Current session
+  duration = { current = 60, overall = 300 },
+  players = { current = {}, overall = {} },
+  sourceCalls = {},
+  spells = {},
+}
+
+function stub.setMeter(which, players)
+  stub.meter.players[which] = players or {}
+end
+
+local function maybeSecret(v)
+  if v == nil then return nil end
+  if stub.meter.secret then return stub.secret(v) end
+  return v
+end
+
+local function sourcesFor(which, attr)
+  local E = Enum.DamageMeterType
+  local out = {}
+  for _, p in ipairs(stub.meter.players[which] or {}) do
+    local base = {
+      -- NeverSecret in the real client, so never wrapped here either.
+      classFilename = p.class,
+      specIconID = p.icon,
+      isLocalPlayer = p.isYou and true or false,
+      deathRecapID = 0,
+      name = maybeSecret(p.name),
+      guid = maybeSecret(p.guid),
+    }
+    if attr == E.Deaths then
+      -- one entry per death, not a player with a count
+      for i = 1, (p.deaths or 0) do
+        local row = {}
+        for k, v in pairs(base) do row[k] = v end
+        row.deathRecapID = 1000 + i
+        row.deathTimeSeconds = maybeSecret(10 * i)
+        row.totalAmount = maybeSecret(0)
+        out[#out + 1] = row
+      end
+      -- and a row for someone who did NOT die, exactly as the real metric does
+      if (p.deaths or 0) == 0 then
+        base.totalAmount = maybeSecret(0)
+        out[#out + 1] = base
+      end
+    else
+      local amount = 0
+      if attr == E.Interrupts then amount = p.kicks or 0
+      elseif attr == E.DamageTaken then amount = p.taken or 0 end
+      base.totalAmount = maybeSecret(amount)
+      base.amountPerSecond = maybeSecret(amount / 60)
+      out[#out + 1] = base
+    end
+  end
+  -- The API returns the list ALREADY SORTED by the metric asked for; position in
+  -- the list is the only ranking available when the amounts are secret.
+  if attr == E.Interrupts then
+    local src = stub.meter.players[which] or {}
+    local order = {}
+    for i, p in ipairs(src) do order[i] = { p.kicks or 0, out[i] } end
+    table.sort(order, function(a, b) return a[1] > b[1] end)
+    local sorted = {}
+    for i, o in ipairs(order) do sorted[i] = o[2] end
+    out = sorted
+  end
+  return out
+end
+
+C_DamageMeter = {
+  IsDamageMeterAvailable = function() return stub.meter.available end,
+
+  GetCombatSessionFromType = function(sessionValue, attr)
+    local S = Enum.DamageMeterSessionType
+    local which = (sessionValue == S.Overall) and "overall" or "current"
+    if which == "current" and stub.meter.emptyCurrent then
+      return { combatSources = {} }
+    end
+    return { combatSources = sourcesFor(which, attr) }
+  end,
+
+  GetAvailableCombatSessions = function() return { { sessionID = 42 } } end,
+
+  GetCombatSessionFromID = function(id, attr)
+    if id ~= 42 then return nil end
+    return { combatSources = sourcesFor("current", attr) }
+  end,
+
+  GetSessionDurationSeconds = function(sessionValue)
+    local S = Enum.DamageMeterSessionType
+    return (sessionValue == S.Overall) and stub.meter.duration.overall
+      or stub.meter.duration.current
+  end,
+
+  -- Handing a secret back to the API is what errors in the real client, and the
+  -- error takes the whole draw down. So the stub raises too.
+  GetCombatSessionSourceFromType = function(sessionValue, attr, guid, creatureID)
+    if issecretvalue(guid) then
+      error("Secret values are only allowed during untainted execution", 2)
+    end
+    stub.meter.sourceCalls[#stub.meter.sourceCalls + 1] = { attr, guid, creatureID }
+    return { totalAmount = 0, combatSpells = stub.meter.spells[guid] or {} }
+  end,
+
+  ResetAllCombatSessions = function() end,
+}
+
+stub.challenge = { level = nil, mapID = nil, mapName = nil, deaths = 0 }
+C_ChallengeMode = {
+  GetActiveKeystoneInfo = function() return stub.challenge.level end,
+  GetActiveChallengeMapID = function() return stub.challenge.mapID end,
+  GetMapUIInfo = function() return stub.challenge.mapName end,
+  GetDeathCount = function() return stub.challenge.deaths end,
+}
+
+C_Spell = { GetSpellName = function(id) return "Spell" .. tostring(id) end }
+GetInstanceInfo = function() return stub.instance or "nowhere" end
+
 stub.instance = nil
 IsInInstance = function()
   if not stub.instance then return false, "none" end

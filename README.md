@@ -16,15 +16,21 @@ Built for 5-player content on retail (Midnight, patch 12.1, Season 2).
   1:58  Crushing Tide                    310k
 ```
 
-> **Read this first: it is not an in-game panel.** Patch 12.0.0 made
-> `COMBAT_LOG_EVENT_UNFILTERED` unregisterable by addons and turned every fallback
-> read — enemy spell id, `notInterruptible`, party auras, cooldown queries — into a
-> *secret value* on dungeon and raid maps. There is no way to compute this inside
-> the game any more, and the addon part of this repo says so rather than showing an
-> empty frame. What still works is the log file the client writes, so Unkicked is a
-> **parser that tails `WoWCombatLog.txt` and reports each pull a few seconds after
-> it ends**, in a terminal beside the game. See `REQUIREMENTS.md` for the full list
-> of what 12.x removed.
+> **Read this first: it is two halves, and only one of them is in the game.**
+> Patch 12.0.0 made `COMBAT_LOG_EVENT_UNFILTERED` unregisterable by addons and
+> turned every fallback read — enemy spell id, `notInterruptible`, party auras,
+> cooldown queries — into a *secret value* on dungeon and raid maps.
+>
+> **In game** you get what `C_DamageMeter` can tell us, which is real and live:
+> interrupts **pressed** per player, deaths and damage taken, per pull and for the
+> whole key, with a current/overall toggle. That is "who is kicking".
+>
+> **Out of game** you get the thing the addon is named after. Whether an enemy cast
+> was interruptible, and which casts got through, are not in any 12.x API — but they
+> are all still in the log file the client writes. So the other half is a **parser
+> that tails `WoWCombatLog.txt` and reports each pull a few seconds after it ends**,
+> in a terminal beside the game. That is "what got through", and nothing in game can
+> answer it. See `REQUIREMENTS.md` for the full list of what 12.x removed.
 
 ---
 
@@ -250,12 +256,16 @@ of *up*, which is how we know the talent read is doing something.
 
 ## In-game commands
 
-These exist, but on a 12.x client the addon has no input: it loads, refuses the
-forbidden events, and says so. `/uk why` prints what is blocked and why.
+On a 12.x client the panel shows the `C_DamageMeter` view — interrupts pressed per
+player, deaths, damage taken — for the current pull or the whole key. `/uk why`
+prints exactly which parts of the old design the client still refuses.
 
 | | |
 |---|---|
-| `/uk why` | which events are blocked, and whether restrictions are active now |
+| `/uk why` | which events are blocked, what the meter does and does not give |
+| `/uk kicks` | interrupts pressed per player, this pull and this key |
+| `/uk current` / `/uk overall` | panel shows this pull, or the whole key |
+| `/uk pulls` | toggle the one-line chat report after each pull |
 | `/uk` | toggle the panel |
 | `/uk clear` | drop the current list |
 | `/uk model` | what the addon believes about each party interrupt right now |
@@ -265,10 +275,21 @@ forbidden events, and says so. `/uk why` prints what is blocked and why.
 | `/uk lock` | stop the panel being dragged |
 | `/uk reset` | put the panel back in the middle of the screen and show it |
 
-On 12.x the panel collapses to a small card: its title, and the line that says
-whether the client is writing `WoWCombatLog.txt`. That is deliberate — twelve rows
-that can never fill look like a broken addon. If you cannot see it at all, `/uk
-reset` recentres it.
+The panel has three modes and says which one it is in, so "nothing on screen" is
+never ambiguous:
+
+* **meter** — the normal case on 12.x. One row per player: kicks, deaths, damage
+  taken. The header names the segment and clicking it toggles pull ↔ key. The
+  footer always reads *kicks pressed — missed casts: parse the log*, because the
+  live view genuinely cannot answer the second question.
+* **blind** — no feed *and* no meter. Two honest lines rather than empty rows.
+* **feed** — one row per unkicked cast. Unreachable on a live 12.x client; it is
+  the same code path the offline parser drives.
+
+In combat the numbers on screen are *secret values*: the addon hands them to the
+widget without ever reading them, which is why nothing is shortened to `k`/`m`
+mid-pull and why totals only appear once the pull ends. If you cannot see the panel
+at all, `/uk reset` recentres it.
 
 ## Install
 

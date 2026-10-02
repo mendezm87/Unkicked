@@ -31,6 +31,8 @@ local DEFAULTS = {
   onlyInterruptible = true,  -- hide casts we know were immune to interrupts
   includeUnknown = true,     -- keep casts whose interruptibility we could not read
   maxRows = 12,
+  segment = "current",       -- which segment the panel shows: current pull or the key
+  pullReport = true,         -- one chat line of kick counts after each pull
   point = { "CENTER", 240, 80 },
   locked = false,
 }
@@ -155,8 +157,16 @@ ns.On("ADDON_LOADED", function(name)
   end
 
   if ns.blocked["COMBAT_LOG_EVENT_UNFILTERED"] then
-    ns.Print("|cffff2020cannot track casts on this client.|r "
-      .. "Patch 12.0.0 made COMBAT_LOG_EVENT_UNFILTERED unregisterable for addons. "
-      .. "Type |cffffd200/uk why|r for what that means.")
+    -- Be specific about which half works. "Cannot track casts" on its own reads
+    -- as "the addon is broken", when in fact the live per-player kick counts do
+    -- work and only the per-cast detail moved offline.
+    if ns.Meter and ns.Meter:Available() then
+      ns.Print("live view is |cffffd200interrupts pressed|r per player, per pull and per key "
+        .. "(C_DamageMeter). Which casts got through needs the log parser -- |cffffd200/uk why|r.")
+    else
+      ns.Print("|cffff2020cannot track casts on this client.|r "
+        .. "Patch 12.0.0 made COMBAT_LOG_EVENT_UNFILTERED unregisterable for addons. "
+        .. "Type |cffffd200/uk why|r for what that means.")
+    end
   end
 end)
