@@ -35,6 +35,7 @@ function M.new(run)
     unknown = 0,        -- casts we still cannot prove were kickable
     unknownDamage = 0,
     unknownDeaths = 0,  -- deaths caused by those, which are still deaths
+    partyDeaths = 0,    -- every party death in the run, attributed or not
     spells = {},        -- spellID -> { name, count, damage, deaths }
     sources = {},       -- caster name -> { count, damage }
     players = {},       -- player name -> { chances, down, cc, unknown, spends, connects }
@@ -53,6 +54,7 @@ end
 function Totals:add(pull, minDamage)
   self.pulls = self.pulls + 1
   self.duration = self.duration + (pull.duration or 0)
+  self.partyDeaths = self.partyDeaths + (pull.partyDeaths or 0)
   if pull.kind == "boss" then
     self.bosses = self.bosses + 1
     if pull.outcome == "kill" then self.kills = self.kills + 1

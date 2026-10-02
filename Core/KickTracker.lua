@@ -83,13 +83,29 @@ function Kick:SetKnown(guid, specID, entries, name)
       local after = t.pctReduction and (base * (1 - t.pctReduction / 100))
                                     or (base - (t.flatReductionMs or 0))
       p.talent = t.name
-      -- A conditional (proc-triggered) reduction only pays out on a successful
-      -- interrupt, which is exactly the split the two-bucket model already has.
-      p.connectMs = after
-      p.whiffMs = t.conditional and base or after
+      if t.match == "category" then
+        -- The reduction was traced to a real cooldown-modifying effect against this
+        -- spell's category, so the number is a fact. A conditional (proc-triggered)
+        -- one only pays out on a successful interrupt, which is the split the
+        -- two-bucket model already has.
+        p.connectMs = after
+        p.whiffMs = t.conditional and base or after
+        p.proven = true
+      else
+        -- Weaker evidence (a class-mask/label heuristic) says only that the talent
+        -- exists. A real Blinding Vale log has an Arms warrior holding this exact
+        -- node entry whose shortest observed Pummel interval over 22 presses was
+        -- 14.88s, not the 13.5s the heuristic asserts -- and asserting it makes the
+        -- model call a kick up ~1.5s early, which changes verdicts. So it stays at
+        -- base and merely unlocks the learning rule down to the talent's floor.
+        p.floorMs = math.min(p.floorMs or after, after)
+        p.eligible = true
+      end
     end
   end
-  p.exact = true
+  -- Only a proven talent value removes the need to learn. A heuristic one must
+  -- leave learning switched on, or the floor it set can never be reached.
+  if p.proven or not p.talent then p.exact = true end
   return p
 end
 

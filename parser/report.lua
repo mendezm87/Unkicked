@@ -154,10 +154,21 @@ function M.overall(t, opts)
 
   local spells = t:topSpells(opts.top or 8)
   if #spells > 0 then
+    -- Two different spell ids can carry the same name -- The Blinding Vale has two
+    -- "Light Bolt"s (1235616 and 1238063) -- and two rows with one label read as a
+    -- duplicated bug rather than as two spells. Label the collision with the id.
+    local seen, dupe = {}, {}
+    for _, sp in ipairs(spells) do
+      local n = sp.name or "?"
+      if seen[n] and seen[n] ~= sp.spellID then dupe[n] = true end
+      seen[n] = sp.spellID
+    end
     out[#out + 1] = ("  %s-- by spell --%s"):format(c.dim, c.reset)
     for _, sp in ipairs(spells) do
+      local label = sp.name or "?"
+      if dupe[label] then label = ("%s (%d)"):format(label, sp.spellID or 0) end
       out[#out + 1] = ("  %-28s %s%8s%s  %s%2d cast%s%s%s"):format(
-        trunc(sp.name or "?", 28), c.bold, short(sp.damage), c.reset,
+        trunc(label, 28), c.bold, short(sp.damage), c.reset,
         c.dim, sp.count, sp.count == 1 and " " or "s", c.reset,
         sp.deaths > 0 and ("  %s%d death%s%s"):format(c.red, sp.deaths,
           sp.deaths == 1 and "" or "s", c.reset) or "")
@@ -196,6 +207,17 @@ function M.overall(t, opts)
         c.bold, short(w.damage), c.reset,
         w.deaths > 0 and ("  %sKILLED %d%s"):format(c.red, w.deaths, c.reset) or "")
     end
+  end
+
+  -- Not every death comes from a cast: a melee killing blow or a ground effect
+  -- belongs to nobody's missed kick. Say so, so the run total reconciles with the
+  -- death count a damage meter shows for the same fight instead of looking short.
+  local attributed = (t.deaths or 0) + (t.unknownDeaths or 0)
+  local unattributed = (t.partyDeaths or 0) - attributed
+  if unattributed > 0 then
+    out[#out + 1] = ("  %s%d further death%s from no tracked cast (melee, ground damage) -- %d of %d accounted for%s")
+      :format(c.dim, unattributed, unattributed == 1 and "" or "s",
+        attributed, t.partyDeaths, c.reset)
   end
 
   if t.unknown > 0 then

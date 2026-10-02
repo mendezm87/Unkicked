@@ -103,9 +103,17 @@ eq(dk.connectMs, 12000, "a connect refunds 3s: 12s, matching the generated floor
 eq(dk.whiffMs, 15000, "a whiff does not: still 15s, because Coldthirst is conditional")
 eq(dk.exact, true, "the cooldown is now exact, not inferred")
 
+-- P-18: Honed Reflexes is only matched by a class-mask heuristic, and a real
+-- Blinding Vale log disproved the asserted number -- an Arms warrior holding node
+-- entry 118850 had a shortest observed Pummel interval of 14.88s across 22 presses,
+-- not 13.5s. A heuristic talent therefore unlocks learning instead of asserting.
 local war = ns.Kick:SetKnown("P-war", 73, { 116924 }, "Thrack")    -- Prot warrior + Honed Reflexes
-eq(war.connectMs, 13500, "an unconditional -10% applies to Pummel either way")
-eq(war.whiffMs, 13500, "including after a whiff")
+eq(war.talent, "Honed Reflexes", "the talent is still recognised as taken")
+eq(war.connectMs, nil, "but a heuristically-matched reduction is not asserted as a value")
+eq(war.whiffMs, nil, "in either bucket, so the model keeps the 15s base")
+eq(war.floorMs, 13500, "it lowers the learning floor to what the talent could achieve")
+eq(war.eligible, true, "and marks the player eligible for a downward correction")
+ok(war.exact ~= true, "learning stays switched on, or that floor is unreachable")
 
 local rog = ns.Kick:SetKnown("P-rog", 261, {}, "Slink")
 eq(rog.spellID, 1766, "Subtlety resolves to Kick")
@@ -278,6 +286,48 @@ do
   ok(txt:find("no deaths caused", 1, true) == nil,
     "the overall never claims 'no deaths caused' when an unproven cast killed someone")
   has(txt, "1 death", "the unproven footer states the death")
+
+  -- P-16: a melee killing blow belongs to nobody's missed kick, but the run total
+  -- must still reconcile. The Blinding Vale log has six party deaths and only five
+  -- a cast can be blamed for; the sixth was Meittik's melee swing.
+  local mixed = Totals.new({})
+  mixed:add({ index = 1, kind = "trash", duration = 10, partyDeaths = 3, records = {
+    { spellID = 3, spellName = "Light Bolt Volley", srcName = "Radiant Spellsower",
+      damage = 1800000, interruptible = true, deaths = { ["Tun"] = 900000 }, kicks = {} },
+    { spellID = 4, spellName = "Warden's Wrath", srcName = "Lightwarden Ruia",
+      damage = 10, interruptible = nil, deaths = { ["Tutte"] = 10 }, kicks = {} },
+  } }, 0)
+  eq(mixed.partyDeaths, 3, "every party death in the pull reaches the run total")
+  eq(mixed.deaths + mixed.unknownDeaths, 2, "two of the three are attributable to a cast")
+  local mtxt = report.overall(mixed, { color = false })
+  has(mtxt, "1 further death from no tracked cast",
+    "the overall states the death no cast can be blamed for")
+  has(mtxt, "2 of 3 accounted for", "and reconciles against the full death count")
+
+  local tidy = Totals.new({})
+  tidy:add({ index = 1, kind = "trash", duration = 10, partyDeaths = 1, records = {
+    { spellID = 5, spellName = "Bolt", srcName = "X", damage = 5, interruptible = true,
+      deaths = { ["A"] = 5 }, kicks = {} },
+  } }, 0)
+  ok(report.overall(tidy, { color = false }):find("no tracked cast", 1, true) == nil,
+    "and says nothing when every death is already accounted for")
+
+  -- P-17: two spell ids can share one name (The Blinding Vale ships two "Light
+  -- Bolt"s), and two identically labelled rows read as a duplicated-row bug.
+  local twins = Totals.new({})
+  twins:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 1235616, spellName = "Light Bolt", srcName = "A", damage = 900,
+      interruptible = true, deaths = {}, kicks = {} },
+    { spellID = 1238063, spellName = "Light Bolt", srcName = "B", damage = 100,
+      interruptible = true, deaths = {}, kicks = {} },
+    { spellID = 42, spellName = "Seed Shot", srcName = "C", damage = 50,
+      interruptible = true, deaths = {}, kicks = {} },
+  } }, 0)
+  local ttxt = report.overall(twins, { color = false })
+  has(ttxt, "Light Bolt (1235616)", "a name shared by two spell ids is labelled with the id")
+  has(ttxt, "Light Bolt (1238063)", "for both of them, so the rows are distinguishable")
+  ok(ttxt:find("Seed Shot (", 1, true) == nil,
+    "a name that is unique is left alone rather than cluttered with an id")
 
   -- Sorted views: by damage, then stable by name.
   local ranked = Totals.new({})

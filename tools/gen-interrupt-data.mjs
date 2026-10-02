@@ -350,12 +350,16 @@ function renderLua(build, results, specInterrupt) {
   L.push("-- this turns the talent GATE (R-3) into a talent FACT: no learning needed.");
   L.push("-- conditional = the reduction came from a proc-triggered spell, so it only");
   L.push("--   applies on a successful interrupt (Coldthirst). false = always applies.");
+  L.push("-- match = how the reduction was identified. \"category\" traced an actual");
+  L.push("--   cooldown-modifying effect onto the interrupt's spell category and is");
+  L.push("--   trusted as a value. Anything weaker is a heuristic: it only unlocks the");
+  L.push("--   learning rule, because a real log contradicted one of these (see R-3).");
   L.push("ns.TRAIT_CD = {");
   for (const r of results) {
     for (const d of r.reductions) {
       const amt = d.pct ? `pctReduction = ${d.amount}` : `flatReductionMs = ${d.amount}`;
       for (const eid of d.entryIDs || []) {
-        L.push(`  [${eid}] = { spellID = ${r.id}, talentID = ${d.talent}, name = ${JSON.stringify(d.talentName)}, ${amt}, conditional = ${d.via ? "true" : "false"} },`);
+        L.push(`  [${eid}] = { spellID = ${r.id}, talentID = ${d.talent}, name = ${JSON.stringify(d.talentName)}, ${amt}, conditional = ${d.via ? "true" : "false"}, match = ${JSON.stringify(d.how || "classmask")} },`);
       }
     }
   }

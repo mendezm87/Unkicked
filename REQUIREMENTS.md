@@ -171,6 +171,10 @@ The generator also emits, from the same build:
   (Honed Reflexes, two entries for the same talent). `conditional = true` marks a
   reduction that only pays out on a successful interrupt.
 
+| **P-16** | The overall counts **every** party death in the run, not only the ones a cast can be blamed for, and states the difference (`N further deaths from no tracked cast ... M of T accounted for`). A melee killing blow or a ground effect is nobody's missed kick, but a run total that silently omits it disagrees with the death count any damage meter shows for the same fight. Observed on The Blinding Vale log: 6 party deaths, 5 attributable to a cast. | done |
+| **P-17** | Two distinct spell ids may carry the same name, so the by-spell table labels a collision with its spell id. The Blinding Vale ships two `Light Bolt`s (`1235616` and `1238063`); without the id the two rows read as one row duplicated by a bug. | done |
+| **P-18** | A cooldown-reduction talent is asserted as a **value** only when the generator traced it to a real cooldown-modifying effect against the interrupt's spell category (`match = "category"`, i.e. Coldthirst). A weaker class-mask/label match sets the **learning floor** and marks the player eligible, leaving the modelled cooldown at base. This follows the stated rule — correct a cooldown only if a talent exists *and* a shorter interval is actually observed — and it is what the real log forced: an Arms warrior holding Honed Reflexes node entry `118850` had a shortest observed Pummel interval of **14.88s across 22 presses**, not the 13.5s the heuristic asserted. Asserting it marks a kick available ~1.5s early. | done |
+
 ## Verified against a real dungeon log
 
 Build `12.1.0` / `COMBAT_LOG_VERSION 22`, Kings' Rest, 129,216 lines, 4 encounters,
@@ -195,3 +199,32 @@ dungeon rather than the synthetic fixture, and it confirms:
 bit meanings were not confirmed against a known-uninterruptible NPC cast, so it is
 not used. Confirming it would replace P-4's observational approach with a generated
 table and remove the unknown-interruptibility section from reports.
+
+## Verified against a Season 2 log — The Blinding Vale +13
+
+Build `12.1.0` / `COMBAT_LOG_VERSION 22`, The Blinding Vale, difficulty 23, keystone
++13, 271,125 lines, 4 encounters (4/4 kills), 25 `COMBATANT_INFO`, 66 interrupts,
+89 interrupt spends. Current-season content on the operator's own client, so the
+format checks here are not inherited from an older log.
+
+- **No lines skipped**; the 19-field advanced layout holds on current content.
+- **Run boundary read from `ZONE_CHANGE`** — instance 2859 at 16:44, closed at 17:13,
+  24:11 in combat across 10 reported pulls, with the key level from `CHALLENGE_MODE_START`.
+- **All five specs resolved from `COMBATANT_INFO`** — Shadow/Silence, Arms/Pummel,
+  Balance/Solar Beam, Holy/Rebuke, Guardian/Skull Bash.
+- **80 unkicked casts / 24.3m damage / 4 deaths**, with 164 further casts still
+  unproven. Cross-checked: 6 party deaths in the log, 5 attributable to a cast.
+- **Honed Reflexes was found in a real loadout and its asserted effect disproved**
+  — see P-18. The talent node entry is genuinely selected by an Arms warrior, but the
+  −10% Pummel cooldown it was credited with is not supported by 22 observed presses.
+  In this log the correction changed no verdict (the shortest interval sits inside the
+  epsilon of base either way), but it removes a systematic ~1.5s early-availability bias.
+- **The CC column read 0 for every player, and that is correct here.** The log does
+  contain a real blocking aura on four party members (`1238294` Disorienting Screech,
+  mechanic `DISORIENTED`, 17:06:35 → 17:06:38), but no proven-kickable cast completed
+  inside that window. The column is therefore still **untested against a coincidence**
+  of CC and an unkicked cast.
+
+**Still unverified:** the Coldthirst two-bucket model against a real Death Knight —
+no DK has appeared in either real log. `SpellInterrupts.InterruptFlags` is likewise
+still unconfirmed (see above).

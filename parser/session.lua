@@ -305,6 +305,14 @@ function Session:line(line)
     self.stats.spends = self.stats.spends + 1
   end
 
+  -- Every party death in the pull, whether or not a cast can be blamed for it.
+  -- Without this the overall can only ever count deaths it attributed, so a melee
+  -- killing blow goes uncounted and the run total silently disagrees with the
+  -- death count in any damage meter looking at the same fight.
+  if event == "UNIT_DIED" and self.pull and self.ns.Kick.players[f[6]] then
+    self.pull.partyDeaths = (self.pull.partyDeaths or 0) + 1
+  end
+
   self.ns.Cast:Ingest(unpack(args, 1, args.n))
 end
 

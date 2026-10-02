@@ -206,7 +206,7 @@ ns.SPEC_INTERRUPT = {
 -- conditional = the reduction came from a proc-triggered spell, so it only
 --   applies on a successful interrupt (Coldthirst). false = always applies.
 ns.TRAIT_CD = {
-  [116924] = { spellID = 6552, talentID = 391271, name = "Honed Reflexes", pctReduction = 10, conditional = false },
-  [118850] = { spellID = 6552, talentID = 391271, name = "Honed Reflexes", pctReduction = 10, conditional = false },
-  [96212] = { spellID = 47528, talentID = 378848, name = "Coldthirst", flatReductionMs = 3000, conditional = true },
+  [116924] = { spellID = 6552, talentID = 391271, name = "Honed Reflexes", pctReduction = 10, conditional = false, match = "classmask" },
+  [118850] = { spellID = 6552, talentID = 391271, name = "Honed Reflexes", pctReduction = 10, conditional = false, match = "classmask" },
+  [96212] = { spellID = 47528, talentID = 378848, name = "Coldthirst", flatReductionMs = 3000, conditional = true, match = "category" },
 }
