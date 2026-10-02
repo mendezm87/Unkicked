@@ -218,7 +218,8 @@ stub.meter = {
   duration = { current = 60, overall = 300 },
   players = { current = {}, overall = {} },
   sourceCalls = {},
-  spells = {},
+  spells = {},        -- guid -> combatSpells for the Interrupts metric
+  damageSpells = {},  -- guid -> combatSpells for the DamageTaken metric
 }
 
 function stub.setMeter(which, players)
@@ -314,7 +315,9 @@ C_DamageMeter = {
       error("Secret values are only allowed during untainted execution", 2)
     end
     stub.meter.sourceCalls[#stub.meter.sourceCalls + 1] = { attr, guid, creatureID }
-    return { totalAmount = 0, combatSpells = stub.meter.spells[guid] or {} }
+    local bag = (attr == Enum.DamageMeterType.DamageTaken)
+      and stub.meter.damageSpells or stub.meter.spells
+    return { totalAmount = 0, combatSpells = bag[guid] or {} }
   end,
 
   ResetAllCombatSessions = function() end,

@@ -27,7 +27,7 @@ local ns
 local function loadAddon()
   ns = {}
   local files = {
-    "Data/InterruptData.lua", "Data/CCData.lua",
+    "Data/InterruptData.lua", "Data/CCData.lua", "Data/Interruptible.lua",
     "Core/Init.lua", "Core/Logging.lua", "Core/Meter.lua", "Core/Nameplates.lua",
     "Core/KickTracker.lua", "Core/CastTracker.lua",
   }
@@ -592,6 +592,34 @@ do
     "the per-spell call refuses a secret GUID instead of erroring")
   stub.meter.secret = false
 
+  -- -------------------------------------------- damage from kickable casts
+  -- The one shape of "missed kick" the live client can produce: the DamageTaken
+  -- drill-down names the spell that hit each player, and the parser has already
+  -- proven which ids are interruptible. A spell NOT in that table contributes
+  -- nothing -- unknown is never counted as kickable.
+  local KNOWN = next(ns.KNOWN_INTERRUPTIBLE)
+  ok(KNOWN ~= nil, "the addon ships the parser's proven-interruptible ids")
+  stub.meter.damageSpells = {
+    ["P-h"] = {
+      { spellID = KNOWN,   totalAmount = 300000 },
+      { spellID = 9999999, totalAmount = 900000 },   -- never proven: not ours
+      { spellID = KNOWN,   totalAmount = 50000 },
+    },
+  }
+  local total, by = ns.Meter:Kickable("current", "P-h")
+  eq(total, 350000, "kickable damage sums only the spells proven interruptible")
+  eq(#by, 2, "and keeps the per-spell breakdown for the tooltip")
+  eq(ns.Meter:Kickable("current", "P-k"), 0, "a player hit by nothing kickable reads zero")
+
+  local snap = ns.Meter:Snapshot("current")
+  eq(snap and snap.kickable, 350000, "the pull snapshot carries the run-wide kickable total")
+
+  stub.meter.secret = true
+  eq(ns.Meter:Kickable("current", ns.Meter:Rows("current")[1].guid), nil,
+    "and it refuses to run against a secret GUID rather than erroring the draw")
+  stub.meter.secret = false
+  stub.meter.damageSpells = {}
+
   -- ------------------------------------------------------------- the key ledger
   stub.challenge = { level = 13, mapID = 500, mapName = "The Blinding Vale", deaths = 3 }
   stub.fire("CHALLENGE_MODE_START")
@@ -646,14 +674,48 @@ do
   assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
   assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
   stub.fire("PLAYER_LOGIN")
+  -- In a key: the per-pull strings below only apply inside one. Until R-20 this
+  -- block asserted them with no key running, so the test agreed with the bug.
+  stub.challenge = { level = 13, mapID = 500, mapName = "The Blinding Vale", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+  ns.Panel:Refresh()
 
   local f = stub.frames["UnkickedPanel"]
   ok(f._h and f._h > 100, ("with a meter the panel is a real list, not a 2-line card (height %s)")
     :format(tostring(f._h)))
-  ok(f.footer:GetText():find("missed casts", 1, true) ~= nil,
-    "and says plainly that it counts kicks pressed, not casts missed")
+  ok(f.footer:GetText():find("not a cast count", 1, true) ~= nil,
+    "and says plainly that kickable damage is a cost, not a count of missed casts")
+
+  -- R-19. The header used to be anchored at the same y as row one, which put
+  -- "kicks died taken" on top of the first player on screen.
+  local headY = f.head and f.head._points[1] and f.head._points[1][3]
+  local rowY = ns.Panel.rows and ns.Panel.rows[1]._points[1] and ns.Panel.rows[1]._points[1][3]
+  ok(headY ~= nil and rowY ~= nil and headY ~= rowY,
+    ("the header sits on its own line, not on row one (head %s, row %s)")
+      :format(tostring(headY), tostring(rowY)))
+  ok(rowY ~= nil and headY ~= nil and math.abs(rowY - headY) >= 16,
+    "with a full row of clearance between them")
   ok(f.seg.text:GetText():find("pull", 1, true) ~= nil, "the header names the segment")
   ok(f.footer:GetText():find("live", 1, true) == nil, "out of combat the footer is not the live one")
+
+  -- R-20. Pulls are only harvested inside a key, so outside one the Current
+  -- session is not "pull 1" -- it is whatever Blizzard accumulated since the
+  -- last reset, which on a real run read 24:18 of whole-dungeon totals under a
+  -- label claiming it was the first pull.
+  do
+    local keptRun, keptPulls = ns.Meter.run, ns.Meter.pulls
+    ns.Meter.run, ns.Meter.pulls = nil, {}
+    ns.db.segment = "current"
+    ns.Panel:Refresh()
+    ok(f.seg.text:GetText():find("pull", 1, true) == nil,
+      ("outside a key the header does not claim a pull number (%q)"):format(f.seg.text:GetText()))
+    ok(f.seg.text:GetText():find("session", 1, true) ~= nil,
+      "it calls the Current session what it is")
+    ok(f.footer:GetText():find("not in a key", 1, true) ~= nil,
+      "and the footer says per-pull totals have not started")
+    ns.Meter.run, ns.Meter.pulls = keptRun, keptPulls
+    ns.Panel:Refresh()
+  end
 
   eq(ns.Panel:Segment(), "overall", "clicking the segment switches to the whole key")
   ok(f.seg.text:GetText():find("run", 1, true) ~= nil, "and the header follows")

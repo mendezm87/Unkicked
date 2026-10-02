@@ -27,8 +27,13 @@ local HEADER = [[
 return {
 ]]
 
-function M.load(path)
-  local self = setmetatable({ path = path, known = {}, dirty = false, learned = 0 }, M)
+-- The addon cannot read this file (it is a bare `return`, and the in-game
+-- namespace wants a named table), so save() mirrors it into Data/Interruptible.lua
+-- as well. That file is what lets the live panel say "this damage came from a
+-- spell we have PROVEN is kickable" -- the only form of "missed kick" the 12.x
+-- client can be made to show.
+function M.load(path, exportPath)
+  local self = setmetatable({ path = path, export = exportPath, known = {}, dirty = false, learned = 0 }, M)
   local chunk = loadfile(path)
   if chunk then
     local ok, t = pcall(chunk)
@@ -70,7 +75,33 @@ function M:save()
   end
   f:write("}\n")
   f:close()
+  self:mirror(ids)
   self.dirty = false
+  return true
+end
+
+-- The same knowledge, shaped for the addon: a named global table the .toc can
+-- load. Only `true` entries cross over -- a hand-asserted `false` is a statement
+-- about a cast being immune, which the live panel has no use for.
+function M:mirror(ids)
+  if not self.export then return false end
+  local f = io.open(self.export, "w")
+  if not f then return false end
+  f:write("-- Unkicked :: Data/Interruptible.lua -- GENERATED, do not hand-edit.\n")
+  f:write("-- Mirror of parser/learned-interruptible.lua, written on every parse.\n")
+  f:write("-- Each id is a spell a SPELL_INTERRUPT was observed stopping, so it is\n")
+  f:write("-- proof and not a guess. The live panel uses it to tell how much of the\n")
+  f:write("-- damage the party ate came from casts that COULD have been stopped.\n")
+  f:write("local ADDON, ns = ...\n")
+  f:write("ns.KNOWN_INTERRUPTIBLE = {\n")
+  for _, id in ipairs(ids) do
+    if self.known[id] == true then
+      local name = self.names and self.names[id]
+      f:write(("  [%d] = true,%s\n"):format(id, name and ("  -- " .. name) or ""))
+    end
+  end
+  f:write("}\n")
+  f:close()
   return true
 end
 

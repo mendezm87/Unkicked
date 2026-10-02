@@ -25,7 +25,18 @@ local Panel = {}
 ns.Panel = Panel
 
 local ROW_H = 16
-local WIDTH = 330
+local WIDTH = 360
+
+-- Column geometry, shared by the data rows AND the header, because the two
+-- drifting apart is exactly how the header ends up sitting on top of row one.
+--   c1 name/spell (flexes)  c2 kicks  c3 died  c4 taken  c5 kickable/names
+local C2_W, C3_W, C4_W, C5_W = 38, 28, 56, 60
+local GAP = 6
+local C1_W = WIDTH - 16 - (C2_W + C3_W + C4_W + C5_W + GAP * 4)
+
+-- The first data row sits BELOW the header row, not on it.
+local HEAD_Y = 22
+local ROWS_Y = HEAD_Y + ROW_H
 
 local frame, rows
 
@@ -116,39 +127,71 @@ local function meterTooltip(p)
     GameTooltip:AddLine("inspected, so there is no breakdown until the pull ends.", 0.6, 0.6, 0.6)
   end
 
+  if p.kickable and p.kickable > 0 then
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddDoubleLine("From spells proven interruptible", ns.Short(p.kickable),
+      1, 0.6, 0.2, 1, 0.6, 0.2)
+    for i = 1, math.min(#(p.kickableBy or {}), 6) do
+      local sp = p.kickableBy[i]
+      local name = (C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(sp.spellID))
+        or tostring(sp.spellID)
+      GameTooltip:AddDoubleLine(name, ns.Short(sp.amount), 0.8, 0.8, 0.8, 1, 0.82, 0)
+    end
+  end
+
   GameTooltip:AddLine(" ")
   GameTooltip:AddLine("Interrupts pressed -- not casts missed.", 1, 0.6, 0.2)
-  GameTooltip:AddLine("Whether a cast was interruptible is not in this API;", 0.7, 0.7, 0.7)
-  GameTooltip:AddLine("parse WoWCombatLog.txt for what actually got through.", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("\"kickable\" is damage from spells the parser has PROVEN", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("can be stopped -- a cost, not a count of missed casts.", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("Which casts got through needs WoWCombatLog.txt.", 0.7, 0.7, 0.7)
 end
 
+
+-- One set of columns, laid out once, used by both the header and every row.
+local function layoutColumns(owner, font)
+  owner.c1 = owner:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
+  owner.c1:SetPoint("LEFT")
+  owner.c1:SetWidth(C1_W)
+  owner.c1:SetJustifyH("LEFT")
+  owner.c1:SetWordWrap(false)
+
+  owner.c2 = owner:CreateFontString(nil, "OVERLAY", font or "GameFontNormalSmall")
+  owner.c2:SetPoint("LEFT", owner.c1, "RIGHT", GAP, 0)
+  owner.c2:SetWidth(C2_W)
+  owner.c2:SetJustifyH("RIGHT")
+
+  owner.c3 = owner:CreateFontString(nil, "OVERLAY", font or "GameFontNormalSmall")
+  owner.c3:SetPoint("LEFT", owner.c2, "RIGHT", GAP, 0)
+  owner.c3:SetWidth(C3_W)
+  owner.c3:SetJustifyH("RIGHT")
+
+  owner.c4 = owner:CreateFontString(nil, "OVERLAY", font or "GameFontDisableSmall")
+  owner.c4:SetPoint("LEFT", owner.c3, "RIGHT", GAP, 0)
+  owner.c4:SetWidth(C4_W)
+  owner.c4:SetJustifyH("RIGHT")
+  owner.c4:SetWordWrap(false)
+
+  owner.c5 = owner:CreateFontString(nil, "OVERLAY", font or "GameFontDisableSmall")
+  owner.c5:SetPoint("LEFT", owner.c4, "RIGHT", GAP, 0)
+  owner.c5:SetWidth(C5_W)
+  owner.c5:SetJustifyH("RIGHT")
+  owner.c5:SetWordWrap(false)
+  return owner
+end
+
+local function setCols(owner, a, b, c, d, e)
+  owner.c1:SetText(a or "")
+  owner.c2:SetText(b or "")
+  owner.c3:SetText(c or "")
+  owner.c4:SetText(d or "")
+  owner.c5:SetText(e or "")
+end
 
 local function buildRow(parent, index)
   local row = CreateFrame("Button", nil, parent)
   row:SetSize(WIDTH - 16, ROW_H)
-  row:SetPoint("TOPLEFT", 8, -(22 + (index - 1) * ROW_H))
-
-  row.c1 = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  row.c1:SetPoint("LEFT")
-  row.c1:SetWidth(140)
-  row.c1:SetJustifyH("LEFT")
-  row.c1:SetWordWrap(false)
-
-  row.c2 = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  row.c2:SetPoint("LEFT", row.c1, "RIGHT", 4, 0)
-  row.c2:SetWidth(46)
-  row.c2:SetJustifyH("RIGHT")
-
-  row.c3 = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  row.c3:SetPoint("LEFT", row.c2, "RIGHT", 4, 0)
-  row.c3:SetWidth(28)
-  row.c3:SetJustifyH("RIGHT")
-
-  row.c4 = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  row.c4:SetPoint("LEFT", row.c3, "RIGHT", 6, 0)
-  row.c4:SetPoint("RIGHT")
-  row.c4:SetJustifyH("LEFT")
-  row.c4:SetWordWrap(false)
+  row:SetPoint("TOPLEFT", 8, -(ROWS_Y + (index - 1) * ROW_H))
+  layoutColumns(row)
 
   row:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -240,10 +283,13 @@ function Panel:Build()
   -- Kept as an alias: Logging and the tests reach for frame.stat.
   frame.stat = frame.seg.text
 
-  frame.head = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  frame.head:SetPoint("TOPLEFT", 8, -22)
-  frame.head:SetPoint("TOPRIGHT", -8, -22)
-  frame.head:SetJustifyH("RIGHT")
+  -- A header laid out with the SAME column geometry as a row, on its own line.
+  -- It used to be one right-justified string anchored at the row-one y, which
+  -- put "kicks died taken" directly on top of the first player.
+  frame.head = CreateFrame("Frame", nil, frame)
+  frame.head:SetPoint("TOPLEFT", 8, -HEAD_Y)
+  frame.head:SetSize(WIDTH - 16, ROW_H)
+  layoutColumns(frame.head, "GameFontDisableSmall")
 
   frame.footer = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   frame.footer:SetPoint("BOTTOMLEFT", 8, 6 + ROW_H)
@@ -278,6 +324,8 @@ function Panel:Build()
 
   rows = {}
   for i = 1, math.max(METER_ROWS, ns.db.maxRows or 12) do rows[i] = buildRow(frame, i) end
+  -- Exposed so a test can prove the header and row one are not on the same line.
+  Panel.rows = rows
 
   self:Layout()
   return frame
@@ -301,7 +349,7 @@ local function refreshFeed()
   local recs = ns.Cast.records
   local shown = 0
 
-  frame.head:SetText("")
+  setCols(frame.head)
   for i = 1, rowCount("feed") do
     local row = rows[i]
     local rec = recs[i]
@@ -312,20 +360,16 @@ local function refreshFeed()
       local mark = ""
       if next(rec.deaths) then mark = "|cffff2020*|r "
       elseif rec.interruptible == nil then mark = "|cffff9933?|r " end
-      row.c1:SetText(mark .. rec.spellName)
-      row.c2:SetText(("|cffffd200%s|r"):format(ns.Short(rec.damage)))
-      row.c3:SetText("")
-
+      local who
       local k = rec.kicks
-      if #k.ready > 0 then
-        row.c4:SetText(namesOf(k.ready, 3))
-      elseif #k.cc > 0 then
-        row.c4:SetText("|cff80b0ffcc|r")
-      elseif #k.unknown > 0 then
-        row.c4:SetText("|cffff9933?|r")
-      else
-        row.c4:SetText("|cff808080all down|r")
-      end
+      if #k.ready > 0 then who = namesOf(k.ready, 3)
+      elseif #k.cc > 0 then who = "|cff80b0ffcc|r"
+      elseif #k.unknown > 0 then who = "|cffff9933?|r"
+      else who = "|cff808080all down|r" end
+
+      row.c5:SetJustifyH("LEFT")
+      setCols(row, mark .. rec.spellName,
+        ("|cffffd200%s|r"):format(ns.Short(rec.damage)), "", "", who)
       row:Show()
     else
       row.rec, row.player = nil, nil
@@ -376,13 +420,22 @@ local function refreshMeter()
   else
     local r, isPlain = ns.Meter:Rows("current")
     data, plain = r or {}, isPlain ~= false
-    local n = #ns.Meter.pulls
-    label = ("|cffffd200pull %d|r  %s"):format(
-      math.max(n, 1), ns.Meter:Clock(ns.Meter:Duration("current") or 0))
+    local clock = ns.Meter:Clock(ns.Meter:Duration("current") or 0)
+    -- Pulls are only ever harvested inside a keystone (harvest() bails when
+    -- Meter.run is nil), so outside one the Current session is NOT pull N -- it
+    -- is whatever Blizzard has been accumulating since the last meter reset,
+    -- which can be a whole dungeon. Calling that "pull 1" is a lie the panel
+    -- told for 24 minutes on a run with no key in it.
+    if not ns.Meter.run then
+      label = ("|cff808080session|r  %s  |cff808080(no key)|r"):format(clock)
+    else
+      label = ("|cffffd200pull %d|r  %s"):format(#ns.Meter.pulls + 1, clock)
+    end
   end
 
   frame.seg.text:SetText(label)
-  frame.head:SetText("|cff808080kicks  died   taken|r")
+  setCols(frame.head, "", "|cff808080kicks|r", "|cff808080died|r",
+    "|cff808080taken|r", "|cffff9933kickable|r")
 
   local shown = 0
   for i = 1, rowCount("meter") do
@@ -398,6 +451,10 @@ local function refreshMeter()
         return v > 0 and ("|cffff2020%d|r"):format(v) or "|cff5050500|r"
       end)
       setAmount(row.c4, p.taken, plain, function(v) return "|cff808080" .. ns.Short(v) .. "|r" end)
+      -- Only ever a plain number: it is computed from the per-spell drill-down,
+      -- which cannot run while the values are secret. Blank during a pull.
+      row.c5:SetJustifyH("RIGHT")
+      row.c5:SetText(p.kickable and ("|cffff9933%s|r"):format(ns.Short(p.kickable)) or "")
       row:Show()
     else
       row.rec, row.player = nil, nil
@@ -413,9 +470,11 @@ local function refreshMeter()
   if shown == 0 then
     frame.footer:SetText("|cff808080no combat yet -- kicks pressed appear here per pull|r")
   elseif not plain then
-    frame.footer:SetText("|cff808080live: kicks pressed (not casts missed)|r")
+    frame.footer:SetText("|cff808080live: kicks pressed. kickable damage lands when the pull ends|r")
+  elseif segment == "current" and not ns.Meter.run then
+    frame.footer:SetText("|cff808080not in a key -- per-pull totals start at CHALLENGE_MODE_START|r")
   else
-    frame.footer:SetText("|cff808080kicks pressed -- missed casts: parse the log|r")
+    frame.footer:SetText("|cff808080kickable = dmg from proven-interruptible spells, not a cast count|r")
   end
 end
 
@@ -423,7 +482,7 @@ end
 local function refreshBlind()
   hideRows(1)
   frame.seg.text:SetText("")
-  frame.head:SetText("")
+  setCols(frame.head)
   frame.footer:SetText("|cffff2020no feed on this client|r -- |cffffd200/uk why|r")
 end
 

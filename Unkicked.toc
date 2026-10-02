@@ -10,6 +10,7 @@
 ## Category-enUS: Combat
 
 Data\InterruptData.lua
+Data\Interruptible.lua
 Data\CCData.lua
 Core\Init.lua
 Core\Nameplates.lua

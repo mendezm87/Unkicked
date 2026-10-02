@@ -241,6 +241,43 @@ function Meter:Rows(which)
   return rows, not secret
 end
 
+-- --------------------------------------------- what the party ate that was kickable
+-- The closest thing to a "missed kick" the live client can produce.
+--
+-- C_DamageMeter will not say what an enemy was casting or whether it could be
+-- interrupted -- so the identity of a cast is unavailable in game, permanently.
+-- But the DamageTaken drill-down DOES name the spell that hit each player, and
+-- the offline parser has already PROVEN which spell ids are interruptible (a
+-- SPELL_INTERRUPT was seen stopping them) and mirrored that into
+-- Data/Interruptible.lua. Intersecting the two gives: how much of the damage
+-- this player took came from spells that can be stopped.
+--
+-- Read it as a COST, not a count. It cannot tell how many casts there were, nor
+-- whether a given one was kicked and a later one was not -- only that this
+-- damage came from a spell somebody could have interrupted. The per-cast answer
+-- stays the parser's.
+--
+-- Needs a readable guid, so like every drill-down it is out-of-combat only.
+function Meter:Kickable(which, guid)
+  local known = ns.KNOWN_INTERRUPTIBLE
+  if not known or guid == nil or ns.IsSecret(guid) then return nil end
+  local spells = self:Spells(which, guid, nil, "DamageTaken")
+  if not spells then return nil end
+
+  local total, by = 0, {}
+  for i = 1, #spells do
+    local sp = spells[i]
+    local id = ns.Plain(sp.spellID)
+    local amount = tonumber(ns.Plain(sp.totalAmount))
+    if id and amount and known[id] == true then
+      total = total + amount
+      by[#by + 1] = { spellID = id, amount = amount }
+    end
+  end
+  table.sort(by, function(a, b) return a.amount > b.amount end)
+  return total, by
+end
+
 -- A readable snapshot, or nil. Only ever succeeds when the values have gone
 -- plain (out of combat), which is exactly why pulls are harvested at the end of
 -- one rather than during it.
@@ -257,6 +294,8 @@ function Meter:Snapshot(which)
       taken = tonumber(row.taken) or 0,
       deaths = row.deaths or 0,
     }
+    r.kickable, r.kickableBy = self:Kickable(which, row.guid)
+    out.kickable = (out.kickable or 0) + (r.kickable or 0)
     out.kicks = out.kicks + r.kicks
     out.deaths = out.deaths + r.deaths
     out.taken = out.taken + r.taken
@@ -286,7 +325,8 @@ end
 function Meter:Total()
   if #self.pulls == 0 then return nil end
   local byKey, order = {}, {}
-  local total = { rows = {}, kicks = 0, deaths = 0, taken = 0, duration = 0, pulls = #self.pulls }
+  local total = { rows = {}, kicks = 0, deaths = 0, taken = 0, kickable = 0,
+                  duration = 0, pulls = #self.pulls }
 
   for _, pull in ipairs(self.pulls) do
     total.duration = total.duration + (pull.duration or 0)
@@ -294,13 +334,15 @@ function Meter:Total()
       local key = r.name or r.identity or tostring(r)
       local acc = byKey[key]
       if not acc then
-        acc = { name = r.name, class = r.class, isYou = r.isYou, kicks = 0, taken = 0, deaths = 0 }
+        acc = { name = r.name, class = r.class, isYou = r.isYou,
+                kicks = 0, taken = 0, deaths = 0, kickable = 0 }
         byKey[key] = acc
         order[#order + 1] = acc
       end
       acc.kicks = acc.kicks + r.kicks
       acc.taken = acc.taken + r.taken
       acc.deaths = acc.deaths + r.deaths
+      acc.kickable = acc.kickable + (r.kickable or 0)
     end
   end
 
@@ -308,6 +350,7 @@ function Meter:Total()
     total.kicks = total.kicks + acc.kicks
     total.deaths = total.deaths + acc.deaths
     total.taken = total.taken + acc.taken
+    total.kickable = total.kickable + (acc.kickable or 0)
     total.rows[#total.rows + 1] = acc
   end
   -- Most kicks first. Legal here and only here: a snapshot is plain by
@@ -372,8 +415,9 @@ function Meter:Announce(snap)
     end
   end
   table.sort(parts)
-  ns.Print("pull %d (%s) -- %d kicks%s%s",
+  ns.Print("pull %d (%s) -- %d kicks%s%s%s",
     snap.index or 0, self:Clock(snap.duration or 0), snap.kicks,
+    (snap.kickable or 0) > 0 and ("  |cffff9933%s from kickable casts|r"):format(ns.Short(snap.kickable)) or "",
     snap.deaths > 0 and ("  |cffff2020%d deaths|r"):format(snap.deaths) or "",
     #parts > 0 and ("  " .. table.concat(parts, "  ")) or "")
 end
@@ -389,8 +433,13 @@ function Meter:Report()
     run.mapName or "run", run.level and (" +" .. run.level) or "",
     self:Clock(total.duration), total.pulls, total.kicks)
   for _, r in ipairs(total.rows) do
-    print(("  |c%s%-20s|r %3d kicks   %d deaths   %s taken")
-      :format(ns.ClassColor(r.class), r.name or "?", r.kicks, r.deaths, ns.Short(r.taken)))
+    print(("  |c%s%-20s|r %3d kicks   %d deaths   %8s taken   %8s kickable")
+      :format(ns.ClassColor(r.class), r.name or "?", r.kicks, r.deaths,
+              ns.Short(r.taken), ns.Short(r.kickable or 0)))
+  end
+  if (total.kickable or 0) > 0 then
+    print(("  |cffff9933%s of that came from spells proven interruptible|r")
+      :format(ns.Short(total.kickable)))
   end
 
   local counted = self:KeyDeaths()
@@ -398,7 +447,8 @@ function Meter:Report()
     print(("  |cffff9933the key counts %d deaths; %d are in the segments above|r")
       :format(counted, total.deaths))
   end
-  print("  |cff808080kicks pressed, not casts missed -- what got through needs the log parser|r")
+  print("  |cff808080kickable = damage from spells PROVEN interruptible; it is a cost, not a cast count.|r")
+  print("  |cff808080which casts went unkicked still needs the log parser.|r")
 end
 
 -- --------------------------------------------------------------------- events

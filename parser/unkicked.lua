@@ -124,7 +124,7 @@ end
 
 -- ------------------------------------------------------------------ the engine
 local ns = host.init(ROOT)
-local knowledge = Knowledge.load(opts.knowledge)
+local knowledge = Knowledge.load(opts.knowledge, HERE .. "/../Data/Interruptible.lua")
 
 local emitted = 0
 local skippedPulls, skippedRuns, reportedRuns = 0, {}, 0
