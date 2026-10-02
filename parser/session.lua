@@ -195,6 +195,10 @@ function Session:kickSnapshot()
       spec = p.spec,
       spell = info and info.name,
       noInterrupt = p.noInterrupt or false,
+      -- The demon owns the button, not the warlock. Saying so stops "Spell Lock
+      -- 24.0s" reading as something he presses himself.
+      pet = (info and info.pet) or false,
+      viaPet = p.viaPet or false,
       talent = p.talent,
       exact = p.exact or false,
       learned = (not p.exact) and (p.connectMs or p.whiffMs) and true or false,
@@ -319,6 +323,14 @@ function Session:line(line)
   if COMBATISH[event] and hostile then
     if not self.pull then self:openPull(ts, "trash", "trash") end
     self.lastCombatAt = ts
+  end
+
+  -- Pet -> owner, from the advanced block's ownerGUID. Done before Ingest so the
+  -- very first pet line is already attributable; SPELL_SUMMON (handled in
+  -- CastTracker) covers lines with no block and tells us about resummons.
+  if self.ns.Pets then
+    local owner = logline.ownerOf(f, self.advanced)
+    if owner then self.ns.Pets:Note(f[2], owner, f[3]) end
   end
 
   local args, why = logline.normalize(ts, f, self.advanced)

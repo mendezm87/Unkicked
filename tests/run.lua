@@ -28,7 +28,7 @@ local function loadAddon()
   ns = {}
   local files = {
     "Data/InterruptData.lua", "Data/CCData.lua", "Data/Interruptible.lua",
-    "Core/Init.lua", "Core/Logging.lua", "Core/Meter.lua", "Core/Nameplates.lua",
+    "Core/Init.lua", "Core/Pets.lua", "Core/Logging.lua", "Core/Meter.lua", "Core/Nameplates.lua",
     "Core/KickTracker.lua", "Core/CastTracker.lua",
   }
   for _, f in ipairs(files) do
@@ -733,6 +733,83 @@ do
   eq(total and total.duration, 150, "and the run clock is the session clock")
 end
 
+print("\n[kick] a warlock's interrupt is cast by his pet")
+do
+  -- Measured on Voidscar Arena +10 (2026-10-01). A warlock does not cast Spell
+  -- Lock; his felhunter does, so every spend arrived with a Pet-* source that is
+  -- not in the roster and was dropped. The report then said
+  -- `Dipndotz 24 up / 0 on cd` for a key in which the demon connected three times
+  -- -- blame for a cooldown we watched him spend. Same class of fault as crediting
+  -- a Holy paladin a Rebuke, just aimed at the wrong unit.
+  loadAddon()
+  local LOCK = { guid = "Player-60-lock", name = "Dipndotz", class = "WARLOCK" }
+  stub.setParty({ PLAYER, LOCK })
+  stub.fire("GROUP_ROSTER_UPDATE")
+  stub.fire("PLAYER_REGEN_DISABLED")
+  ns.Kick:SetKnown(LOCK.guid, 266, {}, LOCK.name)      -- Demonology
+  eq(ns.Kick.players[LOCK.guid].spellID, 19647, "Demonology binds to Spell Lock")
+
+  local PET = stub.friend("Pet-0-417-01", "Maashon")
+  local at = stub.now()
+
+  -- No summon seen and no advanced block yet: the pet is a stranger, so this is
+  -- the bug as it shipped -- the spend goes nowhere.
+  stub.cleu("SPELL_CAST_SUCCESS", PET, nil, { 19647, "Spell Lock", 32 })
+  ok(ns.Kick:StateAt(LOCK.guid, at + 1) ~= "down",
+    "an unattributed pet spend never reaches his cooldown at all")
+
+  -- The log states ownership two ways. SPELL_SUMMON is one of them.
+  stub.cleu("SPELL_SUMMON", stub.friend(LOCK.guid, LOCK.name), PET, { 691, "Summon Felhunter", 32 })
+  eq(ns.Pets:Owner("Pet-0-417-01"), LOCK.guid, "SPELL_SUMMON names the owner")
+  eq(ns.Pets:OwnerOfName("Maashon"), LOCK.guid, "and the name is mapped too, for the in-game join")
+
+  stub.advance(1)
+  at = stub.now()
+  stub.cleu("SPELL_CAST_SUCCESS", PET, nil, { 19647, "Spell Lock", 32 })
+  local state, detail = ns.Kick:StateAt(LOCK.guid, at + 1)
+  eq(state, "down", "now the demon's Spell Lock puts its OWNER on cooldown")
+  near(detail, 23, 1, "with Spell Lock's own 24s, counted from the pet's cast")
+  ok(ns.Kick.players[LOCK.guid].viaPet, "and the model records that it came via a pet")
+
+  -- SPELL_INTERRUPT from the pet is the owner's connect, which is what picks the
+  -- post-connect bucket for any refund talent.
+  stub.cleu("SPELL_INTERRUPT", PET, stub.enemy("E-9", "Caster"),
+    { 19647, "Spell Lock", 32, 1228176, "Lava Bolt", 4 })
+  eq(ns.Kick.players[LOCK.guid].lastSpendConnected, true,
+    "a pet's connect is the owner's connect")
+
+  -- A dead demon is no interrupt at all -- but ONLY once we have watched it die.
+  -- A log that opens with the pet already out never shows a summon, so silence can
+  -- never be read as absence.
+  stub.advance(30)
+  at = stub.now()
+  eq(ns.Kick:StateAt(LOCK.guid, at), "ready", "once the cooldown is up he is available again")
+  stub.cleu("UNIT_DIED", nil, PET, {})
+  state, detail = ns.Kick:StateAt(LOCK.guid, at)
+  eq(state, "none", "with the demon dead there is no button to miss")
+  eq(detail, "pet dead", "and the reason says so rather than reading as missing data")
+  stub.cleu("SPELL_SUMMON", stub.friend(LOCK.guid, LOCK.name),
+    stub.friend("Pet-0-417-02", "Maashon"), { 691, "Summon Felhunter", 32 })
+  eq(ns.Kick:StateAt(LOCK.guid, stub.now()), "ready", "resummoning gives it back")
+end
+
+print("\n[kick] binding a warlock to a spell he does not own")
+do
+  -- Spell Lock is in the PET spellbook, never the player's, so IsPlayerSpell is
+  -- false for it. Asking only that call would tell a warlock he has no interrupt,
+  -- which is precisely the mistake that credited Holy paladins a Rebuke, inverted.
+  loadAddon()
+  local me = { guid = "Player-60-me", name = "Locky", class = "WARLOCK", spells = {} }
+  stub.setParty({ me })
+  stub.units.pet = { guid = "Pet-0-417-09", name = "Maashon", class = "WARLOCK",
+    spells = { [19647] = true } }
+  stub.fire("GROUP_ROSTER_UPDATE")
+  local p = ns.Kick.players[me.guid]
+  eq(p and p.spellID, 19647, "the pet spellbook binds the warlock to Spell Lock")
+  eq(p and p.noInterrupt, nil, "so he is not reported as having none")
+  stub.units.pet = nil
+end
+
 print("\n[meter] resummoned pets, and the row budget")
 do
   -- Voidscar Arena +10, 2026-10-01. A warlock resummoned his felhunter twice, so
@@ -755,6 +832,8 @@ do
     { name = "Wafflezealot", class = "PALADIN", icon = 26, guid = "P-5",   kicks = 0,  taken = 36947172, deaths = 0, isYou = true },
   })
 
+  -- With no roster we cannot know whose demon that is, so the three rows still
+  -- collapse to one but it stays the pet's own row.
   local rows = ns.Meter:Rows("current")
   local by = {}
   for _, r in ipairs(rows) do by[r.name] = r end
@@ -766,10 +845,31 @@ do
     "with the three deaths the combat log recorded for that key")
   eq(by["Mugzee"] and by["Mugzee"].kicks, 18, "and the players are untouched by the merge")
 
+  -- Now say whose it is. A warlock's interrupt IS his pet's, so the demon must
+  -- not hold a row of its own beside him: the kicks belong on his line.
+  ns.Kick:SetKnown("P-4", 266, {}, "Dipndotz")
+  ns.Pets:Note("Pet-1", "P-4", "Maashon")
+  rows = ns.Meter:Rows("current")
+  by = {}
+  for _, r in ipairs(rows) do by[r.name] = r end
+  eq(by["Maashon"], nil, "a known pet gets no row of its own")
+  eq(by["Dipndotz"] and by["Dipndotz"].kicks, 3,
+    "its three Spell Locks are credited to the warlock who owns it")
+  eq(by["Dipndotz"] and by["Dipndotz"].deaths, 3, "without disturbing his deaths")
+  eq(by["Dipndotz"] and by["Dipndotz"].taken, 37530085, "or his damage taken")
+  eq(by["Dipndotz"] and by["Dipndotz"].withPet, 3,
+    "and the row records that all three pet rows fed it")
+  eq(by["Dipndotz"] and by["Dipndotz"].guid, "P-4",
+    "the surviving row is the PLAYER's, even though the pet sorted above him")
+  eq(by["Dipndotz"] and by["Dipndotz"].class, "WARLOCK", "so it keeps his class colour")
+  eq(#rows, 5, "which is one row fewer still")
+  eq(by["Mugzee"] and by["Mugzee"].kicks, 18, "and nobody else moved")
+
   -- Merging READS the amounts, so in combat it must not happen at all: the
   -- rows that survive there do so through the identity dedupe, and every amount
   -- is still carried raw rather than added together.
   stub.meter.secret = true
+  stub.meter.plainNames = true
   local srows = ns.Meter:Rows("current")
   local summed = false
   for _, r in ipairs(srows) do
@@ -777,7 +877,18 @@ do
     if r.kicks ~= nil and not ns.IsSecret(r.kicks) and tonumber(r.kicks) then summed = true end
   end
   eq(summed, false, "in combat nothing is merged, because summing a secret is illegal")
+
+  -- Merging is illegal mid-pull, so the demon keeps a row -- but it must not read
+  -- as a sixth party member. The name is the one part of the join that still works
+  -- when the guid is secret, so the row is relabelled rather than folded.
+  local labelled = 0
+  for _, r in ipairs(srows) do
+    if r.name == "Dipndotz (pet)" then labelled = labelled + 1 end
+    eq(r.name ~= "Maashon", true, "no row still reads as a bare demon name")
+  end
+  ok(labelled > 0, "a pet row that cannot be merged says whose pet it is")
   stub.meter.secret = false
+  stub.meter.plainNames = nil
 end
 
 print("\n[meter] a key where nothing was readable until it ended")

@@ -34,6 +34,18 @@ local function isPartyPlayer(guid)
   return ns.Kick.players[guid] ~= nil
 end
 
+-- Whose interrupt was that? A warlock does not cast Spell Lock -- his felhunter
+-- does -- so the spend arrives with a Pet-* source that is not in the roster. Fold
+-- it onto the owner, or the warlock is reported "up" for a cooldown he spent.
+-- Returns the party GUID to credit, plus whether it came via a pet.
+local function kicker(guid)
+  if not guid then return nil end
+  if ns.Kick.players[guid] then return guid, false end
+  local owner = ns.Pets and ns.Pets:Owner(guid)
+  if owner and ns.Kick.players[owner] then return owner, true end
+  return nil
+end
+
 -- Who had their interrupt up when this cast began.
 local function snapshotParty(at)
   local ready, down, cc, unknown = {}, {}, {}, {}
@@ -64,6 +76,13 @@ end
 -- ------------------------------------------------------------------- handlers
 local handle = {}
 
+-- Pet ownership, straight from the log. The advanced block's ownerGUID covers
+-- lines that carry one; this covers the rest, and is the only thing that tells us
+-- a pet came BACK after dying.
+handle.SPELL_SUMMON = function(ts, srcGUID, srcName, srcFlags, dstGUID, dstName)
+  if ns.Pets then ns.Pets:Note(dstGUID, srcGUID, dstName) end
+end
+
 handle.SPELL_CAST_START = function(ts, srcGUID, srcName, srcFlags, _, _, spellID, spellName)
   if not isEnemy(srcFlags) then return end
   pending[key(srcGUID, spellID)] = {
@@ -82,8 +101,9 @@ handle.SPELL_INTERRUPT = function(ts, srcGUID, srcName, _, dstGUID, _, spellID, 
   local now = GetTime()
   -- The kick connected. Credit the stopper and drop the cast; it never completed.
   pending[key(dstGUID, extraSpellID)] = nil
-  if isPartyPlayer(srcGUID) then
-    ns.Kick:OnConnect(srcGUID, spellID, now)
+  local who = kicker(srcGUID)
+  if who then
+    ns.Kick:OnConnect(who, spellID, now)
   end
   -- An interrupt landing ON a party member locks their school; treat as cannot-act.
   if isPartyPlayer(dstGUID) then
@@ -97,10 +117,13 @@ handle.SPELL_CAST_SUCCESS = function(ts, srcGUID, srcName, srcFlags, _, _, spell
 
   -- A party member spending their interrupt. This fires whether or not it landed,
   -- which is exactly why cooldown tracking keys off this and not SPELL_INTERRUPT.
-  if ns.IS_INTERRUPT[spellID] and isPartyPlayer(srcGUID) then
-    ns.Kick:OnSpend(srcGUID, spellID, now)
-    if ns.Panel then ns.Panel:Refresh() end
-    return
+  if ns.IS_INTERRUPT[spellID] then
+    local who, viaPet = kicker(srcGUID)
+    if who then
+      ns.Kick:OnSpend(who, spellID, now, viaPet)
+      if ns.Panel then ns.Panel:Refresh() end
+      return
+    end
   end
 
   if not isEnemy(srcFlags) then return end
@@ -165,6 +188,8 @@ handle.SPELL_ABSORBED = function() end  -- absorbed damage did not land; ignore
 
 handle.UNIT_DIED = function(ts, _, _, _, dstGUID, dstName)
   local now = GetTime()
+  -- A warlock whose felhunter is dead has no interrupt at all until he resummons.
+  if ns.Pets then ns.Pets:OnDeath(dstGUID) end
   if isPartyPlayer(dstGUID) then
     ns.Kick:OnDeath(dstGUID, now, true)
     -- One death is one death: claimed by the single cast that hit them last, not by

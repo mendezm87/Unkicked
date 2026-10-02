@@ -143,7 +143,17 @@ function Kick:Rebuild()
           -- Rebuke, and binding by class alone blamed them for every cast.
           p.noInterrupt = true
           for _, id in ipairs(candidates) do
-            if IsPlayerSpell(id) then p.noInterrupt = nil; bind(p, id) break end
+            -- A pet interrupt (Spell Lock) is never in the PLAYER's spellbook --
+            -- the demon owns it -- so IsPlayerSpell alone would tell a warlock he
+            -- has no interrupt. Ask the pet spellbook for those.
+            local known
+            if ns.INTERRUPTS[id].pet then
+              known = type(IsSpellKnown) == "function" and IsSpellKnown(id, true) or nil
+              if known == nil then known = ns.GUID("pet") ~= nil end
+            else
+              known = IsPlayerSpell(id)
+            end
+            if known then p.noInterrupt = nil; bind(p, id) break end
           end
         elseif #candidates == 1 then
           -- Another player's spec is unreadable on 12.x, so this is the best we
@@ -170,7 +180,7 @@ local function activeCdMs(p)
   return p.baseMs
 end
 
-function Kick:OnSpend(guid, spellID, now)
+function Kick:OnSpend(guid, spellID, now, viaPet)
   local p = players[guid]
   if not p then return end
   if not p.spellID then bind(p, spellID) end
@@ -197,6 +207,9 @@ function Kick:OnSpend(guid, spellID, now)
   p.lastSpendAt = now
   p.lastSpendConnected = false
   p.seenSpend = true
+  -- Remember that this spend reached us through a pet, so the report can say the
+  -- cooldown belongs to a felhunter rather than look like a warlock casting it.
+  if viaPet then p.viaPet = true end
 end
 
 -- SPELL_INTERRUPT from the same player right after their spend means it connected.
@@ -220,6 +233,15 @@ function Kick:StateAt(guid, when)
   if not p then return "unknown" end
   if p.dead then return "dead" end
   if p.noInterrupt then return "none", "no interrupt" end
+
+  -- Their interrupt belongs to a pet and we WATCHED that pet die without a
+  -- resummon. Not a gap in our data and not a missed chance -- there was no
+  -- button. Absence of a summon is never treated as absence of a pet: a log that
+  -- opens with the demon already out never shows one.
+  if p.spellID and ns.INTERRUPTS[p.spellID] and ns.INTERRUPTS[p.spellID].pet
+     and ns.Pets and ns.Pets:Missing(guid) then
+    return "none", "pet dead"
+  end
 
   local cc = p.cc
   if cc and when >= cc.from and (not cc.until_ or when <= cc.until_) then

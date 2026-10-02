@@ -106,6 +106,7 @@ function M.text(pull, opts)
       local cd = k.cdMs and ("%.1fs"):format(k.cdMs / 1000) or "  -  "
       local spell = k.spell or (k.noInterrupt and "none" or "unknown")
       local note = k.spell and src or (k.noInterrupt and "no interrupt in 12.x" or "spec unknown")
+      if k.pet then note = note .. " (pet)" end
       -- Names are truncated to the column, not merely left-padded: a 25-character
       -- "Brucellosis-Ghostlands-US" in a 16-wide field shoves every later column
       -- right and the table stops being a table.

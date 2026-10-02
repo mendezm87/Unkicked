@@ -115,8 +115,31 @@ local SHAPE = {
   SPELL_AURA_REFRESH    = { spell = 3, advanced = false },
   SPELL_AURA_REMOVED    = { spell = 3, advanced = false },
   UNIT_DIED             = { spell = 0, advanced = true  },
+  SPELL_SUMMON          = { spell = 3, advanced = false },
 }
 M.SHAPE = SHAPE
+
+-- ------------------------------------------------------------------ pet owners
+-- The advanced block opens with infoGUID, ownerGUID. For a pet's line that second
+-- field names the player who owns it, which is how a felhunter's Spell Lock is
+-- credited to the warlock without having to have seen the summon.
+--
+-- SELF-VALIDATING: the candidate is only accepted when the block's infoGUID is the
+-- line's own source and the owner is a Player-. UNIT_DIED is written without the
+-- block in practice despite the shape table, so guessing an offset there would
+-- otherwise read a flag field as a GUID.
+function M.ownerOf(f, adv)
+  if not adv then return nil end
+  local event, src = f[1], f[2]
+  local shape = SHAPE[event]
+  if not shape or not shape.advanced then return nil end
+  if type(src) ~= "string" or src:find("^Player%-") or src == "0000000000000000" then return nil end
+  local at = 1 + BASE + 1 + shape.spell
+  if f[at] ~= src then return nil end
+  local owner = f[at + 1]
+  if type(owner) ~= "string" or not owner:find("^Player%-") then return nil end
+  return owner
+end
 
 local function flags(v)
   return tonumber(v) or tonumber((v or ""):match("0x(%x+)") or "", 16) or 0

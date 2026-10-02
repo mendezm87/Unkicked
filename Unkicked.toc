@@ -13,6 +13,7 @@ Data\InterruptData.lua
 Data\Interruptible.lua
 Data\CCData.lua
 Core\Init.lua
+Core\Pets.lua
 Core\Nameplates.lua
 Core\Logging.lua
 Core\Meter.lua

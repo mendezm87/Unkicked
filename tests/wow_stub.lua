@@ -50,6 +50,12 @@ UnitIsDeadOrGhost = function() return false end
 GetNumGroupMembers = function() return stub.groupSize end
 IsInRaid = function() return false end
 IsPlayerSpell = function(id) local p = stub.units.player; return p and p.spells and p.spells[id] or false end
+-- A pet interrupt (Spell Lock) lives in the PET spellbook, never the player's, so
+-- the warlock case can only be tested through this call.
+IsSpellKnown = function(id, isPet)
+  local u = stub.units[isPet and "pet" or "player"]
+  return u and u.spells and u.spells[id] or false
+end
 -- ------------------------------------------------- secret values (12.0.0+)
 -- The real client hands back opaque userdata that Lua may hold but not test.
 -- We cannot reproduce that at the VM level, so we tag a wrapper table and make
@@ -253,7 +259,11 @@ local function sourcesFor(which, attr)
       specIconID = p.icon,
       isLocalPlayer = p.isYou and true or false,
       deathRecapID = 0,
+      -- Names and numbers are secret INDEPENDENTLY -- the Voidscar +10 audit caught
+      -- a secret guid sitting beside a plain name and a plain total. plainNames is
+      -- the regime where the name is the only join left.
       name = (stub.meter.secretNames and p.name ~= nil) and stub.secret(p.name)
+        or (stub.meter.plainNames and p.name)
         or maybeSecret(p.name),
       guid = maybeSecret(p.guid),
     }

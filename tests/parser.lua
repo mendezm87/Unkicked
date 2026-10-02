@@ -87,6 +87,31 @@ local nosrc = logline.normalize(1000, logline.split(
   'SPELL_CAST_START,0000000000000000,"nil",0x80000000,0x80000000,Player-1,"Rek",0x511,0x0,400001,"Unstable Singularity",8'), true)
 eq(nosrc and nosrc[4], nil, 'a source literally named "nil" is read as no name at all')
 
+print("\n[parser] the advanced block names a pet's owner")
+-- Copied field-for-field from the Voidscar Arena +10 log (2026-10-01, line 5198).
+-- The advanced block opens infoGUID, ownerGUID -- so this ONE line is enough to
+-- credit the felhunter's Spell Lock to Dipndotz, with no summon ever seen.
+local PETCAST = 'SPELL_CAST_SUCCESS,Pet-0-3779-2923-43290-417-01052F1FDC,"Maashon",0x1112,0x80000000,'
+  .. 'Creature-0-3779-2923-43290-241496-00023F543C,"Enthralled Shaman",0xa48,0x80000000,19647,"Spell Lock",0x20,'
+  .. 'Pet-0-3779-2923-43290-417-01052F1FDC,Player-60-0F944E92,266243,266243,5363,10821,2484,0,0,9781,3,200,200,0,'
+  .. '4484.79,-513.71,2574,5.4091,262'
+eq(logline.ownerOf(logline.split(PETCAST), true), "Player-60-0F944E92",
+  "ownerGUID is read straight off a real pet cast line")
+eq(logline.ownerOf(logline.split(PETCAST), false), nil,
+  "and never guessed at when the log has no advanced block")
+
+-- Self-validating: the owner is only accepted when the block's infoGUID is this
+-- line's own source. UNIT_DIED is written WITHOUT the block in practice despite
+-- carrying advanced=true in the shape table, so a counted offset there would read
+-- a flag field and call it a GUID.
+eq(logline.ownerOf(logline.split(
+  'UNIT_DIED,0000000000000000,nil,0x80000000,0x80000000,Pet-0-1,"Maashon",0x1112,0x80000000,0'), true), nil,
+  "a line whose block is absent yields no owner rather than a bogus one")
+eq(logline.ownerOf(logline.split(
+  ('SPELL_CAST_SUCCESS,Player-1,"Rek",0x511,0x0,Creature-0-1,"Mob",0xa48,0x0,1766,"Kick",1,%s')
+    :format(ADV)), true), nil,
+  "and a player's own cast has no owner to find")
+
 print("\n[parser] COMBATANT_INFO is anchored on the talent list, not on a stat count")
 -- Two rows with DIFFERENT numbers of leading stats must both resolve, because
 -- Blizzard adds stat columns between patches and a counted offset would drift.

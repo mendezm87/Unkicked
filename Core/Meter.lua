@@ -258,10 +258,50 @@ end
 -- Merging READS the amounts, so it is only legal when they have gone plain
 -- (out of combat). In combat the duplicates stand, exactly as Blizzard draws
 -- them.
+-- A pet's row is its OWNER's row.
+--
+-- A warlock does not interrupt; his felhunter does, so Blizzard returns Spell Lock
+-- under "Maashon" and the warlock's own row reads 0 kicks. Measured on Voidscar +10:
+-- three pet rows for one demon, and the warlock credited nothing.
+--
+-- The only join available mid-pull is the NAME. A row's guid is a secret value
+-- during a pull even when the amounts beside it are plain (observed on that same
+-- key), and party pet names are plain reads off a unit token -- so pet name ->
+-- owner guid -> owner name is the whole chain. When the owner is not himself on
+-- screen there is nothing to fold into, and the pet keeps its own row.
+local function petOwnerName(name)
+  if name == nil or not ns.Pets then return nil end
+  local owner = ns.Pets:OwnerOfName(name)
+  if not owner then return nil end
+  local p = ns.Kick and ns.Kick.players and ns.Kick.players[owner]
+  local ownerName = p and p.name
+  if ownerName == nil or ownerName == name then return nil end
+  return ownerName
+end
+
+local function foldPets(rows)
+  local present = {}
+  for _, r in ipairs(rows) do if r.name ~= nil then present[r.name] = true end end
+  for _, r in ipairs(rows) do
+    local owner = petOwnerName(r.name)
+    if owner and present[owner] then
+      r.isPet = true
+      r.petOf = owner
+    elseif owner then
+      -- The owner has no row of his own, so there is nothing to merge into. Say
+      -- whose pet it is rather than leaving a bare demon name in a player list.
+      r.isPet = true
+      r.name = owner .. " (pet)"
+    end
+  end
+  return rows
+end
+
 local function mergeByName(rows)
   local out, at = {}, {}
   for _, r in ipairs(rows) do
-    local prior = r.name ~= nil and at[r.name] or nil
+    local mergeKey = r.petOf or r.name
+    local prior = mergeKey ~= nil and at[mergeKey] or nil
     local mergeable = prior
       and not ns.IsSecret(r.kicks) and not ns.IsSecret(prior.kicks)
       and not ns.IsSecret(r.taken) and not ns.IsSecret(prior.taken)
@@ -270,9 +310,22 @@ local function mergeByName(rows)
       prior.taken = (tonumber(prior.taken) or 0) + (tonumber(r.taken) or 0)
       prior.deaths = (tonumber(prior.deaths) or 0) + (tonumber(r.deaths) or 0)
       prior.merged = (prior.merged or 1) + 1
+      if r.isPet or prior.isPet then prior.withPet = (prior.withPet or 0) + 1 end
+      -- The pet usually arrives FIRST, because the Interrupts list is sorted by
+      -- kicks and the demon pressed them all. So whichever row we are keeping, the
+      -- identity on it has to end up being the PLAYER's -- otherwise the merged
+      -- row renders as "Maashon" with no class colour and no (you) marker.
+      if prior.isPet and not r.isPet then
+        prior.name, prior.guid, prior.identity = r.name, r.guid, r.identity
+        prior.class, prior.isYou, prior.rank = r.class, r.isYou, r.rank
+        prior.isPet, prior.petOf = nil, nil
+      end
     else
+      -- Could not merge -- the amounts are still secret. A pet row therefore
+      -- stands on its own this pull, so it must at least read as the owner's.
+      if r.petOf then r.name = r.petOf .. " (pet)" end
       out[#out + 1] = r
-      if r.name ~= nil and prior == nil then at[r.name] = r end
+      if mergeKey ~= nil and prior == nil then at[mergeKey] = r end
     end
   end
   return out
@@ -350,7 +403,7 @@ function Meter:Rows(which)
     if ns.IsSecret(row.kicks) or ns.IsSecret(row.taken) then secret = true end
   end
 
-  return mergeByName(rows), not secret
+  return mergeByName(foldPets(rows)), not secret
 end
 
 -- ------------------------------------------------------------------- sorting

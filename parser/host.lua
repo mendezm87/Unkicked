@@ -84,6 +84,7 @@ local ORDER = {
   "Data/InterruptData.lua",
   "Data/CCData.lua",
   "Core/Init.lua",
+  "Core/Pets.lua",
   "Core/Nameplates.lua",
   "Core/KickTracker.lua",
   "Core/CastTracker.lua",

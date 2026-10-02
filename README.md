@@ -202,6 +202,16 @@ returns configID `-1`. So the model is inferred from the combat log:
   press it.
 - Refund-style talents make the cooldown **conditional**, so two values are learned
   per player: one for a spend that connected, one for a whiff.
+- A **pet's interrupt belongs to its owner.** A warlock does not cast Spell Lock; his
+  felhunter does, so the spend arrives with a `Pet-*` source. Ownership comes from the
+  advanced block's `ownerGUID` (one pet cast line is enough — no summon needed) and
+  from `SPELL_SUMMON`, and the footer marks it `(pet)`. Before this, the Voidscar +13
+  report read `Dipndøtz 24 up / 0 on cd` for a key in which his demon spent Spell Lock
+  three times. In the panel the pet's rows fold into the warlock's; mid-pull, where
+  summing a secret amount is illegal, the row instead reads `Dipndøtz (pet)`.
+- A warlock whose demon we **watched die** has no interrupt at all until he resummons.
+  Never seeing a summon is not evidence of no pet — a log that opens with the demon
+  already out never shows one.
 
 ## Keeping the data current
 

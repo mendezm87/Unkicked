@@ -100,6 +100,12 @@ end
 local function meterTooltip(p)
   GameTooltip:AddLine(p.name or "?", 1, 1, 1)
   if p.isYou then GameTooltip:AddLine("you", 0.7, 0.7, 0.7) end
+  -- A warlock's interrupts are his demon's. Folding them onto his row is right, but
+  -- it has to be visible, or his kick count looks like it came from nowhere.
+  if p.withPet then
+    GameTooltip:AddLine(("includes %d pet row%s"):format(p.withPet,
+      p.withPet == 1 and "" or "s"), 0.7, 0.7, 0.7)
+  end
   GameTooltip:AddLine(" ")
 
   if p.plain then
