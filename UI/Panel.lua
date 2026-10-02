@@ -215,22 +215,31 @@ end
 
 -- A party is five, so meter mode never needs twelve rows -- and a row area sized
 -- for twelve with five in it reads as a list that failed to load.
-local METER_ROWS = 6
+-- A party is five, but the meter lists every ACTOR: pets kick too, and each
+-- resummon is its own row upstream. Six slots meant the Voidscar +10 showed
+-- three players and three copies of one felhunter, and the only member who
+-- actually died never made the list at all -- which is what made the panel look
+-- like it was undercounting deaths.
+local METER_ROWS = 10
 
 local function rowCount(m)
   if m == "meter" then return METER_ROWS end
   return ns.db.maxRows or 12
 end
 
-local function heightFor(m)
+-- `n` is how many rows are actually on screen. The cap is a ceiling, not a
+-- shape: sizing to the ceiling leaves a five-man group sitting in a box with
+-- five empty lines under it, which reads as a broken addon.
+local function heightFor(m, n)
   if m == "blind" then return 22 + ROW_H * 2 + 10 end
+  n = math.min(n or rowCount(m), rowCount(m))
   -- header row + rows + footer + log line
-  return 22 + ROW_H + ROW_H * rowCount(m) + 18 + ROW_H
+  return 22 + ROW_H + ROW_H * math.max(n, 1) + 18 + ROW_H
 end
 
-function Panel:Layout()
+function Panel:Layout(n)
   if not frame then return end
-  frame:SetSize(WIDTH, heightFor(mode()))
+  frame:SetSize(WIDTH, heightFor(mode(), n))
 end
 
 function Panel:Build()
@@ -400,9 +409,15 @@ end
 -- Which means: no colour wrapper, no "k"/"m" shortening, no hiding a zero -- all
 -- of those read the value. Out of combat the same field is a plain number again
 -- and the formatted path applies.
-local function setAmount(fs, value, plain, fmt)
+--
+-- Plainness is decided PER VALUE, not once for the whole table. A real +10
+-- (Voidscar Arena, 2026-10-01) returned readable amounts beside an unreadable
+-- name, and a single global flag made every number in the panel render as a raw
+-- 77011323 instead of 77.0m. A name this code cannot read says nothing about
+-- whether a number beside it can be.
+local function setAmount(fs, value, fmt)
   if value == nil then fs:SetText("") return end
-  if plain then fs:SetText(fmt(value)) else fs:SetText(value) end
+  if ns.IsSecret(value) then fs:SetText(value) else fs:SetText(fmt(value)) end
 end
 
 local function refreshMeter()
@@ -450,11 +465,11 @@ local function refreshMeter()
       row.rec, row.player = nil, p
       row.c1:SetText(("|c%s%s|r%s"):format(ns.ClassColor(p.class),
         p.name or "?", p.isYou and " |cff808080(you)|r" or ""))
-      setAmount(row.c2, p.kicks, plain, function(v) return ("|cffffd200%d|r"):format(v) end)
-      setAmount(row.c3, p.deaths, plain, function(v)
+      setAmount(row.c2, p.kicks, function(v) return ("|cffffd200%d|r"):format(v) end)
+      setAmount(row.c3, p.deaths, function(v)
         return v > 0 and ("|cffff2020%d|r"):format(v) or "|cff5050500|r"
       end)
-      setAmount(row.c4, p.taken, plain, function(v) return "|cff808080" .. ns.Short(v) .. "|r" end)
+      setAmount(row.c4, p.taken, function(v) return "|cff808080" .. ns.Short(v) .. "|r" end)
       -- Only ever a plain number: it is computed from the per-spell drill-down,
       -- which cannot run while the values are secret. Blank during a pull.
       row.c5:SetJustifyH("RIGHT")
@@ -466,6 +481,7 @@ local function refreshMeter()
     end
   end
   hideRows(rowCount("meter") + 1)
+  Panel:Layout(shown)
 
   -- Said on every refresh, not once in a readme. This panel counts interrupts
   -- PRESSED; the thing the addon is named after -- a cast nobody stopped -- is

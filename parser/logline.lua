@@ -136,6 +136,13 @@ function M.normalize(ts, f, adv)
   local srcGUID, srcName, srcFlags = f[2], f[3], flags(f[4])
   local dstGUID, dstName = f[6], f[7]
 
+  -- A no-source event is written with the null GUID and the LITERAL string
+  -- "nil" as its name, so reports that fall back on `name or "?"` print the word
+  -- nil as if a mob were called that. Seen on every Unstable Singularity in the
+  -- Voidscar +10. Nil means nil.
+  if srcName == "nil" and srcGUID == "0000000000000000" then srcName = nil end
+  if dstName == "nil" and dstGUID == "0000000000000000" then dstName = nil end
+
   -- Positions are explicit because the suffix slots can legitimately be nil, and
   -- a nil hole makes `#args` meaningless. args.n is the real length.
   local args = { ts, event, srcGUID, srcName, srcFlags, dstGUID, dstName, n = 7 }

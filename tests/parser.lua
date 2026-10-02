@@ -80,6 +80,13 @@ local wrong, why = logline.normalize(1000, logline.split(dmg), false)
 eq(wrong, nil, "with advanced logging wrongly assumed off, the line is refused")
 has(why, "numeric", "and says why, rather than silently scoring 0 damage")
 
+-- A no-source event carries the null GUID and the LITERAL string "nil" as its
+-- name. Reports fall back on `name or "?"`, so without this the Voidscar +10
+-- printed a mob called "nil" against every Unstable Singularity.
+local nosrc = logline.normalize(1000, logline.split(
+  'SPELL_CAST_START,0000000000000000,"nil",0x80000000,0x80000000,Player-1,"Rek",0x511,0x0,400001,"Unstable Singularity",8'), true)
+eq(nosrc and nosrc[4], nil, 'a source literally named "nil" is read as no name at all')
+
 print("\n[parser] COMBATANT_INFO is anchored on the talent list, not on a stat count")
 -- Two rows with DIFFERENT numbers of leading stats must both resolve, because
 -- Blizzard adds stat columns between patches and a counted offset would drift.

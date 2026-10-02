@@ -698,6 +698,53 @@ do
   eq(total and total.duration, 150, "and the run clock is the session clock")
 end
 
+print("\n[meter] resummoned pets, and the row budget")
+do
+  -- Voidscar Arena +10, 2026-10-01. A warlock resummoned his felhunter twice, so
+  -- its three Spell Locks came back as THREE rows all named "Maashon" with
+  -- amount=1 (Pet-...-417-01/02/04). Blizzard's own meter draws them that way, so
+  -- the shape is upstream -- but unmerged they ate three of the panel's six slots
+  -- and pushed Dipndotz, the only member who actually died, off the list. That is
+  -- what made the panel look like it was undercounting deaths.
+  loadAddon()
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.setMeter("current", {
+    { name = "Mugzee",       class = "WARRIOR", icon = 21, guid = "P-1",   kicks = 18, taken = 77011323, deaths = 0 },
+    { name = "Brucellosis",  class = "SHAMAN",  icon = 22, guid = "P-2",   kicks = 9,  taken = 40470250, deaths = 0 },
+    { name = "Mandi",        class = "MAGE",    icon = 23, guid = "P-3",   kicks = 5,  taken = 38808425, deaths = 0 },
+    { name = "Maashon",      class = "WARLOCK", icon = 24, guid = "Pet-1", kicks = 1,  taken = 0,        deaths = 0 },
+    { name = "Maashon",      class = "WARLOCK", icon = 24, guid = "Pet-2", kicks = 1,  taken = 0,        deaths = 0 },
+    { name = "Maashon",      class = "WARLOCK", icon = 24, guid = "Pet-4", kicks = 1,  taken = 0,        deaths = 0 },
+    { name = "Dipndotz",     class = "WARLOCK", icon = 25, guid = "P-4",   kicks = 0,  taken = 37530085, deaths = 3 },
+    { name = "Wafflezealot", class = "PALADIN", icon = 26, guid = "P-5",   kicks = 0,  taken = 36947172, deaths = 0, isYou = true },
+  })
+
+  local rows = ns.Meter:Rows("current")
+  local by = {}
+  for _, r in ipairs(rows) do by[r.name] = r end
+  eq(by["Maashon"] and by["Maashon"].kicks, 3,
+    "three resummons of one pet are one row carrying the summed count")
+  eq(#rows, 6, "which leaves the whole group inside the panel's row budget")
+  ok(by["Dipndotz"] ~= nil, "so the member who only died is on the list at all")
+  eq(by["Dipndotz"] and by["Dipndotz"].deaths, 3,
+    "with the three deaths the combat log recorded for that key")
+  eq(by["Mugzee"] and by["Mugzee"].kicks, 18, "and the players are untouched by the merge")
+
+  -- Merging READS the amounts, so in combat it must not happen at all: the
+  -- rows that survive there do so through the identity dedupe, and every amount
+  -- is still carried raw rather than added together.
+  stub.meter.secret = true
+  local srows = ns.Meter:Rows("current")
+  local summed = false
+  for _, r in ipairs(srows) do
+    if r.merged then summed = true end
+    if r.kicks ~= nil and not ns.IsSecret(r.kicks) and tonumber(r.kicks) then summed = true end
+  end
+  eq(summed, false, "in combat nothing is merged, because summing a secret is illegal")
+  stub.meter.secret = false
+end
+
 print("\n[meter] a key where nothing was readable until it ended")
 do
   -- Also from the real run: amounts stay secret for the whole restricted map,
@@ -792,6 +839,23 @@ do
   ok(f.seg.text:GetText():find("run", 1, true) ~= nil, "and the header follows")
   SlashCmdList.UNKICKED("current")
   eq(ns.db.segment, "current", "/uk current switches back")
+
+  -- R-22. One unreadable value used to poison the formatting of every other
+  -- one. On the real +10 a row's name came back secret while the amounts beside
+  -- it were plain, and the single global "plain" flag made the whole table
+  -- render raw -- "77011323" where "77.0m" belonged. Plainness is per value.
+  do
+    ns.db.segment = "current"
+    stub.meter.secretNames = true
+    ns.Panel:Refresh()
+    local taken = ns.Panel.rows[1].c4:GetText()
+    ok(taken ~= nil and taken:find("|cff808080", 1, true) ~= nil,
+      ("a readable amount is still formatted beside an unreadable name (%q)"):format(tostring(taken)))
+    eq(ns.Panel.rows[1].c1:GetText():find("?", 1, true) ~= nil, true,
+      "and the name it genuinely cannot read shows as ?")
+    stub.meter.secretNames = false
+    ns.Panel:Refresh()
+  end
 
   -- The crash that matters: a refresh during combat, when every amount is a
   -- secret value that may be handed to a widget but never formatted or compared.

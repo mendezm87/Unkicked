@@ -193,6 +193,38 @@ local function lookupCount(idx, row)
 end
 
 -- ---------------------------------------------------------------------- rows
+-- One player, one row -- even when the API hands back several.
+--
+-- OBSERVED ON A REAL +10 (Voidscar Arena, 2026-10-01): a warlock resummoned his
+-- felhunter twice, so its three Spell Locks arrived as THREE rows all named
+-- "Maashon" with amount=1 (Pet-0-3779-2923-43290-417-01/02/04...). Blizzard's
+-- own meter shows them that way too, so this is upstream shape, not a read bug.
+-- Unmerged they ate three of the panel's row slots and pushed the player who
+-- actually died off the bottom of the list.
+--
+-- Merging READS the amounts, so it is only legal when they have gone plain
+-- (out of combat). In combat the duplicates stand, exactly as Blizzard draws
+-- them.
+local function mergeByName(rows)
+  local out, at = {}, {}
+  for _, r in ipairs(rows) do
+    local prior = r.name ~= nil and at[r.name] or nil
+    local mergeable = prior
+      and not ns.IsSecret(r.kicks) and not ns.IsSecret(prior.kicks)
+      and not ns.IsSecret(r.taken) and not ns.IsSecret(prior.taken)
+    if mergeable then
+      prior.kicks = (tonumber(prior.kicks) or 0) + (tonumber(r.kicks) or 0)
+      prior.taken = (tonumber(prior.taken) or 0) + (tonumber(r.taken) or 0)
+      prior.deaths = (tonumber(prior.deaths) or 0) + (tonumber(r.deaths) or 0)
+      prior.merged = (prior.merged or 1) + 1
+    else
+      out[#out + 1] = r
+      if r.name ~= nil and prior == nil then at[r.name] = r end
+    end
+  end
+  return out
+end
+
 -- One row per player who was there -- the union of the actors in every metric we
 -- show, not just the sorted one. A healer who kicked nothing still belongs on
 -- screen, with a zero, or the panel is reporting "who scored" and not "who was
@@ -263,7 +295,7 @@ function Meter:Rows(which)
     if ns.IsSecret(row.kicks) or ns.IsSecret(row.taken) then secret = true end
   end
 
-  return rows, not secret
+  return mergeByName(rows), not secret
 end
 
 -- --------------------------------------------- what the party ate that was kickable
@@ -285,7 +317,7 @@ end
 -- Needs a readable guid, so like every drill-down it is out-of-combat only.
 function Meter:Kickable(which, guid)
   local known = ns.KNOWN_INTERRUPTIBLE
-  if not known or guid == nil or ns.IsSecret(guid) then return nil end
+  if not known or guid == nil then return nil end
   local spells = self:Spells(which, guid, nil, "DamageTaken")
   if not spells then return nil end
 
@@ -331,14 +363,31 @@ end
 
 -- Per-spell drill-down for one player. Needs a READABLE guid (gotcha 2), so it
 -- is out-of-combat only and returns nil rather than erroring in a pull.
+-- MEASURED, 2026-10-01, Voidscar Arena +10: `src.guid` came back SECRET even
+-- after the key ended and the amounts beside it had gone plain again -- /uk
+-- audit printed readable names and readable totals on rows whose guid was still
+-- unreadable. So "wait until out of combat and the guid will be plain" is false,
+-- and a drill-down gated on a plain guid can never run at all.
+--
+-- Handing the secret straight back is the only remaining move. Research says it
+-- raises "Secret values are only allowed during untainted execution", so it is
+-- pcall'd and the refusal is COUNTED rather than swallowed -- if it ever starts
+-- working, /uk audit says so, and if it never does, the audit says that too
+-- instead of the kickable column silently staying blank forever.
+Meter.secretGuidRefusals = 0
+
 function Meter:Spells(which, guid, creatureID, attrName)
   local attr = metric(attrName or "Interrupts")
-  if not attr or guid == nil or ns.IsSecret(guid) then return nil end
+  if not attr or guid == nil then return nil end
   local value = sessionValue(which)
   if value == nil then return nil end
   local ok, container = pcall(C_DamageMeter.GetCombatSessionSourceFromType,
     value, attr, guid, creatureID)
-  if not ok or not container then return nil end
+  if not ok then
+    if ns.IsSecret(guid) then self.secretGuidRefusals = self.secretGuidRefusals + 1 end
+    return nil
+  end
+  if not container then return nil end
   return container.combatSpells
 end
 
@@ -413,12 +462,24 @@ function Meter:Audit()
       print(("  %-12s no list"):format(name))
     else
       print(("  %-12s %d rows"):format(name, #list))
+      -- The field names themselves, once per metric: if the identifier this
+      -- code wants is simply spelled something other than `guid`, nothing else
+      -- in this dump would ever reveal it.
+      if list[1] then
+        local keys = {}
+        for k in pairs(list[1]) do keys[#keys + 1] = k end
+        table.sort(keys)
+        print("      fields: " .. table.concat(keys, ", "))
+      end
       for i = 1, #list do
         local src = list[i]
         local n = ns.Plain(src.name)
+        -- nil and secret are DIFFERENT diagnoses: nil means the field is not
+        -- called `guid` at all, secret means it exists and may not be read.
+        local g = src.guid == nil and "<absent>"
+          or (ns.IsSecret(src.guid) and "<secret>" or "plain")
         print(("    [%d] %s guid=%s recap=%s amount=%s"):format(
-          i, tostring(n or "<secret>"),
-          ns.Plain(src.guid) ~= nil and "plain" or "<secret>",
+          i, tostring(n or "<secret>"), g,
           tostring(ns.Plain(src.deathRecapID)),
           ns.IsSecret(src.totalAmount) and "<secret>" or tostring(ns.Plain(src.totalAmount))))
       end
@@ -427,6 +488,8 @@ function Meter:Audit()
   local counted = self:KeyDeaths()
   ns.Print("key death counter: %s; pulls harvested: %d; harvests refused by secrets: %d",
     tostring(counted), #self.pulls, self.blockedHarvests or 0)
+  ns.Print("drill-downs refused for a secret guid: %d (kickable column needs these)",
+    self.secretGuidRefusals or 0)
 end
 
 function Meter:Clock(s)

@@ -12,14 +12,20 @@ return {
   [270901] = true,
   [270920] = true,
   [356995] = true,
-  [1235616] = true,  -- Light Bolt
-  [1238063] = true,  -- Light Bolt
-  [1238232] = true,  -- Seed Shot
-  [1238294] = true,  -- Disorienting Screech
-  [1239821] = true,  -- Warden's Wrath
-  [1247669] = true,  -- Lightspore Shot
+  [1228176] = true,  -- Lava Bolt
+  [1233398] = true,  -- Mad Shriek
+  [1235616] = true,
+  [1238063] = true,
+  [1238232] = true,
+  [1238294] = true,
+  [1239821] = true,
+  [1247669] = true,
+  [1249621] = true,  -- Violent Sand
   [1294815] = true,
   [1294972] = true,
   [1295125] = true,
-  [1301834] = true,  -- Light Bolt Volley
+  [1298899] = true,  -- Demoralizing Shout
+  [1299938] = true,  -- Shadowbolt Volley
+  [1301834] = true,
+  [1310324] = true,  -- Mending Void
 }

@@ -214,6 +214,8 @@ Enum.AddOnRestrictionType = Enum.AddOnRestrictionType or {}
 stub.meter = {
   available = false,
   secret = false,
+  secretNames = false,  -- measured on a real key: a name can be unreadable
+                        -- while the amount beside it is plain
   emptyCurrent = false,   -- reproduces the post-reset empty Current session
   duration = { current = 60, overall = 300 },
   players = { current = {}, overall = {} },
@@ -243,7 +245,8 @@ local function sourcesFor(which, attr)
       specIconID = p.icon,
       isLocalPlayer = p.isYou and true or false,
       deathRecapID = 0,
-      name = maybeSecret(p.name),
+      name = (stub.meter.secretNames and p.name ~= nil) and stub.secret(p.name)
+        or maybeSecret(p.name),
       guid = maybeSecret(p.guid),
     }
     if attr == E.Deaths then
