@@ -146,6 +146,7 @@ handle.SPELL_CAST_SUCCESS = function(ts, srcGUID, srcName, srcFlags, _, _, spell
     kicks = snapshotParty(p.startedAt),
     damage = 0,
     dmgTo = {},
+    dmgToName = {},
     lastHitAt = {},
     deaths = {},
   })
@@ -167,7 +168,7 @@ local function owningCast(srcGUID, spellID, at)
   return nil
 end
 
-local function accumulate(srcGUID, spellID, dstGUID, amount)
+local function accumulate(srcGUID, spellID, dstGUID, dstName, amount)
   local now = GetTime()
   closeStale(now)
   local rec = owningCast(srcGUID, spellID, now)
@@ -176,12 +177,20 @@ local function accumulate(srcGUID, spellID, dstGUID, amount)
   if dstGUID then
     rec.dmgTo[dstGUID] = (rec.dmgTo[dstGUID] or 0) + (amount or 0)
     rec.lastHitAt[dstGUID] = now
+    -- Who ate it, by name. The GUID alone cannot be reported: a run's table is
+    -- read by a human, and only party players are named here because a pet or a
+    -- totem eating a Lava Bolt is not a party member missing a kick.
+    if isPartyPlayer(dstGUID) then
+      local known = ns.Kick.players[dstGUID]
+      rec.dmgToName[dstGUID] = (dstName ~= "nil" and dstName)
+        or (known and known.name) or rec.dmgToName[dstGUID]
+    end
   end
   if ns.Panel then ns.Panel:Refresh() end
 end
 
-handle.SPELL_DAMAGE = function(ts, srcGUID, _, _, dstGUID, _, spellID, _, _, amount)
-  accumulate(srcGUID, spellID, dstGUID, amount)
+handle.SPELL_DAMAGE = function(ts, srcGUID, _, _, dstGUID, dstName, spellID, _, _, amount)
+  accumulate(srcGUID, spellID, dstGUID, dstName, amount)
 end
 handle.SPELL_PERIODIC_DAMAGE = handle.SPELL_DAMAGE
 handle.SPELL_ABSORBED = function() end  -- absorbed damage did not land; ignore

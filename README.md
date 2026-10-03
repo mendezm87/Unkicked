@@ -90,6 +90,7 @@ lua parser\unkicked.lua --overall   # the run total only
 lua parser\unkicked.lua --pull 7    # just pull 7 (the run total still covers them all)
 lua parser\unkicked.lua --sort casts        # order the tables by cast count, not damage
 lua parser\unkicked.lua --sort damage --desc # worst casts by pure size, ignoring deaths
+lua parser\unkicked.lua --sort casts        # "who ate it" by cast count instead of damage
 lua parser\unkicked.lua --overall --top 5
 ```
 
@@ -103,6 +104,9 @@ end of the dungeon rather than a guess:
   Wretched Discharge               4.0m   3 casts
   Hex Volley                       1.6m   1 cast
   Spectral Bolt                    974k  13 casts
+  -- who ate it (damage from casts that could have been stopped) --
+  Aigirlf-Illidan-US               4.1m   11 casts    3 spells  died 1
+  Spirtbreaker-Pereno…             1.9m    7 casts    2 spells
   -- interrupt available when a cast got through (chances, not blame) --
   Aigirlf-Illidan-US    16 up    0 on cd     2 cc     8 unknown
   Spirtbreaker-Pereno…  11 up   13 on cd     1 cc     0 unknown
@@ -110,6 +114,12 @@ end of the dungeon rather than a guess:
   pull 7   Wretched Discharge         Half-Finished Mummy      1.7m
   120 further casts (22.0m dmg, 2 deaths) not yet proven kickable -- excluded above
 ```
+
+`who ate it` is the log's version of the in-game `kickable` column, and it carries
+the two things the API has no field for: how many stoppable casts hit each player,
+and how many different spells. Only victims the log names are counted, so a cast
+whose hits landed on nobody nameable is in the run total and in no row — the table
+is not meant to sum to it.
 
 One instance is one run (`ZONE_CHANGE` says so in the log), so pointing this at
 an archive containing several keys gives you one report each plus a file-wide

@@ -441,6 +441,44 @@ do
   eq(who.players["Down"].down, 1, "and one on cooldown is counted as unavailable")
   has(report.overall(who, { color = false }), "chances, not blame",
     "the header refuses to read as a blame table")
+
+  -- P-27: the log's answer to the in-game `kickable` column -- damage each party
+  -- member took from a proven cast, plus the cast and spell counts C_DamageMeter
+  -- has no field for. Verified against an independent extraction of the 10/02 log
+  -- (Rufir 5004950, Fluffytaill 2913939), so the shape here is the shape that
+  -- matched real numbers.
+  local ate = Totals.new({})
+  ate:add({ index = 1, kind = "trash", duration = 10, records = {
+    { spellID = 40, spellName = "Lava Bolt", srcName = "Enthralled Shaman", damage = 350,
+      interruptible = true, deaths = { Rufir = 100 }, kicks = {},
+      dmgTo = { g1 = 100, g2 = 200, ["pet-1"] = 50 },
+      dmgToName = { g1 = "Rufir", g2 = "Fluffytaill" } },
+    { spellID = 41, spellName = "Shadowbolt Volley", srcName = "Voidtouched Magi", damage = 70,
+      interruptible = true, deaths = {}, kicks = {},
+      dmgTo = { g1 = 70 }, dmgToName = { g1 = "Rufir" } },
+    -- Immune, so it is not a missed kick and must not appear in anyone's row.
+    { spellID = 42, spellName = "Unstoppable", srcName = "Z", damage = 9999,
+      interruptible = false, deaths = {}, kicks = {},
+      dmgTo = { g1 = 9999 }, dmgToName = { g1 = "Rufir" } },
+  } }, 0)
+  eq(ate.victims["Rufir"].damage, 170, "a victim's damage sums only proven casts")
+  eq(ate.victims["Rufir"].casts, 2, "and counts the casts that hit them, not the run's casts")
+  eq(ate.victims["Rufir"].distinct, 2, "distinct spells is a count of spells, not of hits")
+  eq(ate.victims["Rufir"].deaths, 1, "a death is credited to the player who died")
+  eq(ate.victims["Fluffytaill"].casts, 1, "a second victim of one cast is counted once each")
+  eq(ate.victims["Fluffytaill"].deaths, 0, "and is not credited with someone else's death")
+  -- The one that would be a fabrication: a hit on a unit we could not name is in
+  -- the run total and in nobody's row, rather than being invented as a party member.
+  eq(ate.victims["pet-1"], nil, "an unnamed victim is not turned into a player row")
+  local sum = 0
+  for _, v in pairs(ate.victims) do sum = sum + v.damage end
+  ok(sum < ate.damage, "so the table is not expected to sum to the run total")
+  local atxt = report.overall(ate, { color = false })
+  has(atxt, "who ate it", "the overall names the section for what it is")
+  has(atxt, "2 spells", "and states the spell count the API cannot give")
+  eq(Totals.sortable("spells"), true, "the new column is sortable like the others")
+  eq(ate:byVictim({ by = "casts", asc = true })[1].name, "Fluffytaill",
+    "--sort casts --asc reaches the victim table too")
 end
 
 do

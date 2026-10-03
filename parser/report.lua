@@ -200,6 +200,23 @@ function M.overall(t, opts)
     end
   end
 
+  -- What the in-game `kickable` column shows, read from the log instead -- and in
+  -- every mode the column offers, since the log has the cast and spell counts the
+  -- API has no field for. Damage from a cast whose hits named nobody is in the run
+  -- total and in no row here, so this table is not expected to sum to it.
+  local victims = t:byVictim(opts.sort)
+  if #victims > 0 then
+    out[#out + 1] = ("  %s-- who ate it (damage from casts that could have been stopped) --%s%s")
+      :format(c.dim, t:sortTag("victims", opts.sort), c.reset)
+    for _, v in ipairs(victims) do
+      out[#out + 1] = ("  %-20s %s%8s%s  %s%3d cast%s  %2d spell%s%s%s"):format(
+        trunc(v.name, 20), c.bold, short(v.damage), c.reset,
+        c.dim, v.casts, v.casts == 1 and " " or "s",
+        v.distinct, v.distinct == 1 and " " or "s", c.reset,
+        v.deaths > 0 and ("  %sdied %d%s"):format(c.red, v.deaths, c.reset) or "")
+    end
+  end
+
   local players = t:byPlayer(opts.sort)
   if #players > 0 then
     -- R-7: this is a count of chances, not of failures. The log cannot see

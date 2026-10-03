@@ -39,6 +39,7 @@ function M.new(run)
     spells = {},        -- spellID -> { name, count, damage, deaths }
     sources = {},       -- caster name -> { count, damage }
     players = {},       -- player name -> { chances, down, cc, unknown, spends, connects }
+    victims = {},       -- player name -> { damage, casts, deaths, spells = {id->true} }
     worst = {},         -- every proven cast, trimmed on report
   }, Totals)
 end
@@ -87,6 +88,27 @@ function Totals:add(pull, minDamage)
         local src = bucket(self.sources, r.srcName or "?", { count = 0, damage = 0 })
         src.count, src.damage = src.count + 1, src.damage + dmg
 
+        -- Who ate it. This is the figure the in-game `kickable` column wants --
+        -- damage a player took from a spell somebody could have stopped -- except
+        -- the log can also say how many casts and how many distinct spells, which
+        -- C_DamageMeter's spell row carries no field for (R-40). Only victims we
+        -- could name are counted; a cast whose damage lines named nobody adds to
+        -- the run total and to no player, so these columns do not sum to it.
+        for guid, amount in pairs(r.dmgTo or {}) do
+          local who = (r.dmgToName or {})[guid]
+          if who then
+            local v = bucket(self.victims, who,
+              { damage = 0, casts = 0, deaths = 0, spells = {}, distinct = 0 })
+            v.damage = v.damage + (amount or 0)
+            v.casts = v.casts + 1
+            if not v.spells[r.spellID] then
+              v.spells[r.spellID] = true
+              v.distinct = v.distinct + 1
+            end
+            if (r.deaths or {})[who] then v.deaths = v.deaths + 1 end
+          end
+        end
+
         local k = r.kicks or {}
         local function note(list, field)
           for _, p in ipairs(list or {}) do
@@ -121,6 +143,8 @@ local COLUMNS = {
   spells  = { damage = "damage", casts = "count", deaths = "deaths", name = "name" },
   sources = { damage = "damage", casts = "count", name = "name" },
   players = { up = "chances", cd = "down", cc = "cc", unknown = "unknown", name = "name" },
+  victims = { damage = "damage", casts = "casts", deaths = "deaths",
+              spells = "distinct", name = "name" },
   worst   = { damage = "damage", deaths = "deaths", pull = "pull", name = "spell",
               spell = "spell" },
 }
@@ -211,6 +235,22 @@ function Totals:topSources(n, sort)
     return a.name < b.name
   end, sort)
   while n and #out > n do table.remove(out) end
+  return out
+end
+
+-- The log's answer to the in-game `kickable` column: damage each party member
+-- took from a proven-interruptible cast, with the cast and spell counts the API
+-- cannot give.
+function Totals:byVictim(sort)
+  local out = {}
+  for name, v in pairs(self.victims) do
+    out[#out + 1] = { name = name, damage = v.damage, casts = v.casts,
+      deaths = v.deaths, distinct = v.distinct }
+  end
+  arrange("victims", out, function(a, b)
+    if a.damage ~= b.damage then return a.damage > b.damage end
+    return a.name < b.name
+  end, sort)
   return out
 end
 
