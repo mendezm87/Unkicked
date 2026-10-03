@@ -698,6 +698,64 @@ do
   for _, r in ipairs(snap2 and snap2.rows or {}) do if r.name == "Healer" then got = r end end
   eq(got and got.kickable, 77000,
     "so the kickable column fills on a client that will not name a player's spells")
+
+  -- ------------------------------------------ R-40: the LIVE view never drilled down
+  -- MEASURED 2026-10-03, Voidscar Arena +11. The player's screenshot read "key
+  -- total 18:44" with an empty kickable column and a footer claiming "none of
+  -- the 158 known interruptible casts hit anyone". That label is LiveLabel, so
+  -- the segment was the live one -- and kickable was only ever computed in
+  -- Snapshot, i.e. on a harvested pull. The live view had therefore never called
+  -- the drill-down in any key ever run, while its footer asserted a measurement
+  -- no code path had taken.
+  local live = ns.Meter:View("current")
+  local lrow
+  for _, r in ipairs(live or {}) do if r.name == "Healer" then lrow = r end end
+  eq(lrow and lrow.kickable, 77000,
+    "the live segment drills down per spell instead of leaving the column blank")
+
+  -- ------------------------------------------- R-40: choosing what the column shows
+  stub.meter.damageSpells = { ["P-h"] = {
+    { spellID = BOOT, totalAmount = 77000, overkillAmount = 4000 },
+    { spellID = KNOWN, totalAmount = 23000, overkillAmount = 0 },
+    { spellID = 9999999, totalAmount = 500000, overkillAmount = 9000 },
+  } }
+  local _, _, stats = ns.Meter:Kickable("current", "P-h")
+  eq(stats and stats.damage, 100000, "damage mode sums the proven-interruptible spells")
+  eq(stats and stats.spells, 2, "spells mode counts how many different ones hit them")
+  eq(stats and stats.overkill, 4000, "overkill mode sums only their overkill")
+  eq(stats and stats.casts, nil,
+    "and casts stays absent, because the API's spell row carries no count")
+  eq(ns.Meter.noCastCount, true, "which the picker reads to mark that mode unavailable")
+
+  ns.Meter:SetKickableMode("spells")
+  eq(ns.Meter:KickValue({ kick = stats }), 2, "the column reads the mode the player picked")
+  ns.Meter:SetKickableMode("overkill")
+  eq(ns.Meter:KickValue({ kick = stats }), 4000, "and switching mode re-reads the same pull")
+  ns.Meter:SetKickableMode("casts")
+  eq(ns.Meter:KickValue({ kick = stats }), nil,
+    "a mode with no figure is blank, never a fabricated zero")
+  eq(ns.Meter:SetKickableMode("nonsense"), nil, "an unknown mode is refused outright")
+  ns.Meter:SetKickableMode("damage")
+
+  -- A row stored by a build that only ever wrote the damage figure still resolves
+  -- for the damage mode, and refuses to invent the other three.
+  eq(ns.Meter:KickValue({ kickable = 500 }), 500, "a legacy stored row still reads its damage")
+  ns.Meter:SetKickableMode("spells")
+  eq(ns.Meter:KickValue({ kickable = 500 }), nil,
+    "but a legacy row does not pretend to answer a mode it never stored")
+  ns.Meter:SetKickableMode("damage")
+
+  -- A client that DOES report a count is read without a code change.
+  stub.meter.damageSpells = { ["P-h"] = {
+    { spellID = BOOT, totalAmount = 77000, count = 6 },
+    { spellID = 9999999, totalAmount = 500000, count = 40 },
+  } }
+  local _, _, cstats = ns.Meter:Kickable("current", "P-h")
+  eq(cstats and cstats.casts, 6, "a count field, under any of its plausible names, is used")
+  eq(ns.Meter.noCastCount, false, "and the mode stops being marked unavailable")
+  stub.meter.damageSpells = {}
+  stub.meter.secretGuids = false
+  stub.groupSize = 0
   stub.meter.secretGuids = false
   stub.meter.damageSpells = {}
   stub.groupSize = 0
@@ -1009,12 +1067,37 @@ do
   local f = stub.frames["UnkickedPanel"]
   ok(f._h and f._h > 100, ("with a meter the panel is a real list, not a 2-line card (height %s)")
     :format(tostring(f._h)))
-  -- R-34. These stub rows have no drill-down, so the column is blank for every
-  -- one of them -- and a blank column must say WHY rather than reading as a
-  -- measured zero. This assertion used to expect the generic line, which is the
-  -- test agreeing with a panel that explained nothing.
-  ok(f.footer:GetText():find("kickable:", 1, true) ~= nil,
-    "an all-blank kickable column explains itself rather than looking measured")
+  -- R-34, both halves. These stub rows DO drill down -- the call succeeds and
+  -- returns an empty spell list -- so the column is a measured zero and must
+  -- render as one. The earlier version of this assertion expected a blank column
+  -- here, which was the test agreeing with a live view that never drilled down
+  -- at all (R-40).
+  eq(ns.Panel.rows[1].c5:GetText(), "|cffff99330|r",
+    "a drill-down that ran and matched nothing renders 0, not blank")
+  ok(f.footer:GetText():find("proven interruptible", 1, true) ~= nil,
+    "and the footer says what the column is counting")
+
+  -- The other half: a column with no figure at all must say WHY rather than
+  -- reading as a measured zero. "casts" is the honest case -- this client's
+  -- spell rows carry no count, so the mode has nothing to show.
+  ns.Meter.noCastCount = true
+  ns.Meter:SetKickableMode("casts")
+  ns.Panel:Refresh()
+  eq(ns.Panel.rows[1].c5:GetText(), "",
+    "a mode this client cannot answer leaves the cell blank")
+  ok(f.footer:GetText():find("no cast count", 1, true) ~= nil,
+    "an all-blank column explains itself rather than looking measured")
+
+  -- And the picker refuses to select a mode it just said was unavailable,
+  -- rather than leaving an unexplained empty column behind.
+  ns.Panel:Cols(true)
+  local box = stub.frames["UnkickedColBox"]
+  local castsBtn
+  for _, b in ipairs(box.items or {}) do if b.mode == "casts" then castsBtn = b end end
+  ok(castsBtn and castsBtn.blocked == true, "the picker marks `casts` unavailable on this client")
+  ns.Meter:SetKickableMode("damage")
+  ns.Panel:Cols(false)
+  ns.Panel:Refresh()
 
   -- R-19. The header used to be anchored at the same y as row one, which put
   -- "kicks died taken" on top of the first player on screen.

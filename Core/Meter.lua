@@ -571,23 +571,159 @@ end
 -- stays the parser's.
 --
 -- Needs a readable guid, so like every drill-down it is out-of-combat only.
-function Meter:Kickable(which, guid)
-  if guid == nil then return nil end
-  local spells = self:Spells(which, guid, nil, "DamageTaken")
-  if not spells then return nil end
+-- What the column can be asked to show.
+--
+-- "damage" is what it has always shown, and the question that prompted this was
+-- why it is not a count of casts instead. The honest answer is that the API's
+-- per-spell row has no count of any kind in it: DamageMeterCombatSpell is
+-- spellID, totalAmount, amountPerSecond, creatureName, overkillAmount,
+-- isAvoidable, isDeadly, combatSpellDetails -- checked against the documented
+-- struct on 2026-10-03, and against whatever the live client actually returns by
+-- /uk audit, which now prints the field names of a damage row for exactly this
+-- reason.
+--
+-- So "casts" is offered, is read from a count field if the client turns out to
+-- have one under any of the names a count could plausibly carry, and renders a
+-- dash with its reason when it does not -- rather than being left off the menu
+-- on the strength of a documentation page. The number of MISSED casts stays the
+-- parser's answer either way; the panel can only ever report what landed.
+--
+-- "spells" is the count that IS reachable: how many different proven-
+-- interruptible spells hit that player. It is not a cast count and is not
+-- labelled as one.
+Meter.KICKABLE_MODES = {
+  { key = "damage",   label = "kickable", field = "damage",
+    note = "damage taken from spells proven interruptible" },
+  { key = "casts",    label = "kickable", field = "casts",
+    note = "casts of those spells -- only if the client reports a count" },
+  { key = "spells",   label = "kickable", field = "spells",
+    note = "how many different interruptible spells hit them" },
+  { key = "overkill", label = "overkill", field = "overkill",
+    note = "overkill from those spells -- what actually killed someone" },
+  { key = "off",      label = "", field = false,
+    note = "hide the column entirely" },
+}
 
-  local total, by = 0, {}
+local KMODE = {}
+for _, m in ipairs(Meter.KICKABLE_MODES) do KMODE[m.key] = m end
+
+function Meter:KickableMode()
+  local want = ns.db and ns.db.kickableShow
+  return KMODE[want or ""] or KMODE.damage
+end
+
+function Meter:SetKickableMode(key)
+  if not KMODE[key or ""] then return nil end
+  ns.db.kickableShow = key
+  return KMODE[key]
+end
+
+-- Every name a cast count could plausibly be spelled, tried in order. Documented
+-- fields first; the rest exist because the struct page is not the client.
+local COUNT_FIELDS = { "count", "castCount", "hitCount", "casts", "hits", "numCasts", "numHits" }
+
+local function countOf(sp)
+  for _, f in ipairs(COUNT_FIELDS) do
+    local v = tonumber(ns.Plain(sp[f]))
+    if v then return v end
+  end
+  local d = sp.combatSpellDetails
+  if type(d) == "table" then
+    for _, f in ipairs(COUNT_FIELDS) do
+      local v = tonumber(ns.Plain(d[f]))
+      if v then return v end
+    end
+  end
+  return nil
+end
+
+-- Returns value, by, stats, why.
+--   value  -- the figure for the CURRENT mode, or nil when that mode has none
+--   by     -- per-spell breakdown, for the tooltip
+--   stats  -- every mode's figure, so the picker can say which ones are live
+--   why    -- a reason code when there is no value, so a blank column can say
+--             which of six different things happened instead of the footer
+--             asserting "none of the known casts hit anyone", which is a
+--             measurement, and was being claimed on a view that never measured.
+function Meter:Kickable(which, guid)
+  if guid == nil then return nil, nil, nil, "no-unit" end
+  local spells, why = self:Spells(which, guid, nil, "DamageTaken")
+  if not spells then return nil, nil, nil, why or "no-spells" end
+  -- An EMPTY list is not a failure. The call succeeded and the answer is that
+  -- nothing hit this player, which is a measured zero and renders as one.
+
+  -- Whether a count field exists is a property of the CLIENT, so it is settled
+  -- from every spell row in the list, not only the interruptible ones -- a pull
+  -- where nothing kickable landed would otherwise say nothing about whether the
+  -- "casts" mode can ever work.
+  local sawCount = false
+  for i = 1, #spells do
+    if countOf(spells[i]) then sawCount = true; break end
+  end
+  -- An empty list says nothing about whether this client reports counts, so it
+  -- must not be allowed to answer the question either way.
+  if #spells > 0 then self.noCastCount = not sawCount end
+
+  local stats = { damage = 0, spells = 0, overkill = 0 }
+  if sawCount then stats.casts = 0 end
+
+  local by = {}
   for i = 1, #spells do
     local sp = spells[i]
     local id = ns.Plain(sp.spellID)
     local amount = tonumber(ns.Plain(sp.totalAmount))
     if id and amount and ns.IsKickable(id) == true then
-      total = total + amount
-      by[#by + 1] = { spellID = id, amount = amount }
+      local n = countOf(sp)
+      local over = tonumber(ns.Plain(sp.overkillAmount)) or 0
+      if n then stats.casts = (stats.casts or 0) + n end
+      stats.damage = stats.damage + amount
+      stats.spells = stats.spells + 1
+      stats.overkill = stats.overkill + over
+      by[#by + 1] = { spellID = id, amount = amount, casts = n, overkill = over }
     end
   end
+
+  -- A drill-down that RAN and matched nothing is a measured zero, and stays a
+  -- zero: R-34 cuts both ways. Only "we never got a figure" is blank.
   table.sort(by, function(a, b) return a.amount > b.amount end)
-  return total, by
+
+  local mode = self:KickableMode()
+  if not mode.field then return nil, by, stats, "off" end
+  local value = stats[mode.field]
+  if value == nil then return nil, by, stats, "no-count" end
+  return value, by, stats, nil
+end
+
+-- Set the moment any drill-down finds a spell row with no count field on it, so
+-- the "casts" mode can be offered and then honestly marked unavailable rather
+-- than silently showing nothing.
+Meter.noCastCount = false
+
+-- Summing two stats tables while keeping "never measured" distinct from zero:
+-- a field absent on both sides stays absent, so a column nobody could measure
+-- renders blank rather than as a confident 0 (R-34).
+local STAT_FIELDS = { "damage", "casts", "spells", "overkill" }
+
+function Meter.AddStats(into, add)
+  if not add then return into end
+  into = into or {}
+  for _, f in ipairs(STAT_FIELDS) do
+    if add[f] ~= nil then into[f] = (into[f] or 0) + add[f] end
+  end
+  return into
+end
+local addStats = Meter.AddStats
+
+-- The figure this row should show for the column's current mode, or nil when
+-- that mode has no answer for it. Rows stored by an older build carry only the
+-- damage figure, so that one still resolves from the legacy field.
+function Meter:KickValue(row)
+  local mode = self:KickableMode()
+  if not row or not mode.field then return nil end
+  local st = row.kick
+  if st and st[mode.field] ~= nil then return st[mode.field] end
+  if not st and mode.field == "damage" then return row.kickable end
+  return nil
 end
 
 -- A readable snapshot, or nil. Only ever succeeds when the values have gone
@@ -608,8 +744,14 @@ function Meter:Snapshot(which)
     }
     -- row.unitGUID first: the row's own guid is secret on a live client (see
     -- unitGUIDFor), so without the unit-token key this is always nil.
-    r.kickable, r.kickableBy = self:Kickable(which, row.unitGUID or row.guid)
-    out.kickable = (out.kickable or 0) + (r.kickable or 0)
+    -- The whole stats table, not just the damage figure: the column's mode can
+    -- be changed after a key is over, and a pull that stored only one of the
+    -- four answers would go blank the moment the player asked for another.
+    local _, by, stats = self:Kickable(which, row.unitGUID or row.guid)
+    r.kickableBy, r.kick = by, stats
+    r.kickable = stats and stats.damage or nil
+    if r.kickable then out.kickable = (out.kickable or 0) + r.kickable end
+    if stats then out.kick = addStats(out.kick, stats) end
     out.kicks = out.kicks + r.kicks
     out.deaths = out.deaths + r.deaths
     out.taken = out.taken + r.taken
@@ -635,22 +777,47 @@ Meter.secretGuidRefusals = 0
 
 function Meter:Spells(which, guid, creatureID, attrName)
   local attr = metric(attrName or "Interrupts")
-  if not attr or guid == nil then return nil end
+  if not attr then return nil, "no-metric" end
+  if guid == nil then return nil, "no-unit" end
   -- There is no by-id drill-down in the API, only by session TYPE. Serving the
   -- Current session's spells under a past session's label would be a lie, so a
   -- segment addressed by id has no breakdown at all.
-  if type(which) == "table" then return nil end
+  if type(which) == "table" then return nil, "by-id" end
   local value = sessionValue(which)
-  if value == nil then return nil end
+  if value == nil then return nil, "no-session" end
   local ok, container = pcall(C_DamageMeter.GetCombatSessionSourceFromType,
     value, attr, guid, creatureID)
   if not ok then
-    if ns.IsSecret(guid) then self.secretGuidRefusals = self.secretGuidRefusals + 1 end
-    return nil
+    if ns.IsSecret(guid) then
+      self.secretGuidRefusals = self.secretGuidRefusals + 1
+      return nil, "secret-guid"
+    end
+    return nil, "refused"
   end
-  if not container then return nil end
+  if not container then return nil, "no-source" end
+  if not container.combatSpells then return nil, "no-spells" end
   return container.combatSpells
 end
+
+-- Plain English for each reason code, for the one line under the table. Keyed
+-- so the panel never has to carry the reasoning itself.
+Meter.KICKABLE_WHY = {
+  ["no-unit"]     = "cannot match a panel row to a party unit",
+  ["no-metric"]   = "this client has no DamageTaken metric",
+  ["by-id"]       = "a past session has no per-spell breakdown in the API",
+  ["no-session"]  = "no readable session to drill into",
+  ["secret-guid"] = "the API will not name a player's spells (guid is secret)",
+  ["refused"]     = "the per-spell call was refused",
+  ["no-source"]   = "nobody took damage in this segment",
+  ["no-spells"]   = "the drill-down returned no spell list",
+  ["empty"]       = "nobody took damage in this segment",
+  ["no-match"]    = "none of the %d known interruptible casts hit anyone",
+  ["no-count"]    = "this client reports no cast count -- parse the log for casts",
+  ["off"]         = "column hidden",
+  ["not-live"]    = "only a live segment can drill down per spell",
+  ["in-combat"]   = "lands when the pull ends -- the amounts are secret in combat",
+  ["stored"]      = "this segment was stored without one -- the live view measures it",
+}
 
 -- ------------------------------------------------------------- the run ledger
 -- The run total is the sum of the pulls inside the keystone window, deliberately
@@ -680,7 +847,7 @@ function Meter:TotalOf(pulls)
       local acc = byKey[key]
       if not acc then
         acc = { name = r.name, class = r.class, isYou = r.isYou,
-                kicks = 0, taken = 0, deaths = 0, kickable = nil }
+                kicks = 0, taken = 0, deaths = 0, kickable = nil, kick = nil }
         byKey[key] = acc
         order[#order + 1] = acc
       end
@@ -688,6 +855,7 @@ function Meter:TotalOf(pulls)
       acc.taken = acc.taken + r.taken
       acc.deaths = acc.deaths + r.deaths
       if r.kickable then acc.kickable = (acc.kickable or 0) + r.kickable end
+      if r.kick then acc.kick = addStats(acc.kick, r.kick) end
     end
   end
 
@@ -696,6 +864,7 @@ function Meter:TotalOf(pulls)
     total.deaths = total.deaths + acc.deaths
     total.taken = total.taken + acc.taken
     if acc.kickable then total.kickable = (total.kickable or 0) + acc.kickable end
+    if acc.kick then total.kick = addStats(total.kick, acc.kick) end
     total.rows[#total.rows + 1] = acc
   end
   -- Most kicks first. Legal here and only here: a snapshot is plain by
@@ -763,6 +932,43 @@ function Meter:Audit()
     tostring(counted), #self.pulls, self.blockedHarvests or 0)
   ns.Print("drill-downs refused for a secret guid: %d (kickable column needs these)",
     self.secretGuidRefusals or 0)
+
+  -- The question this answers: the documented DamageMeterCombatSpell has no
+  -- count field of any kind, so "show casts instead of damage" has no source in
+  -- the API. The struct page is not the client, though, so dump what a real
+  -- damage row actually carries and let the next run settle it rather than the
+  -- column being left off the menu on the strength of a wiki table.
+  ns.Print("per-spell drill-down (DamageTaken) -- does a cast count exist?")
+  local sawAny = false
+  for i = 0, 4 do
+    local unit = (i == 0) and "player" or ("party" .. i)
+    local guid = ns.GUID(unit)
+    if guid ~= nil then
+      local spells, why = self:Spells("current", guid, nil, "DamageTaken")
+      if not spells then
+        print(("    %-7s no spell list: %s"):format(unit, tostring(why)))
+      else
+        sawAny = true
+        print(("    %-7s %d spell(s)"):format(unit, #spells))
+        if spells[1] then
+          local keys = {}
+          for k in pairs(spells[1]) do keys[#keys + 1] = k end
+          table.sort(keys)
+          print("      fields: " .. table.concat(keys, ", "))
+          local d = spells[1].combatSpellDetails
+          if type(d) == "table" then
+            local dk = {}
+            for k in pairs(d) do dk[#dk + 1] = k end
+            table.sort(dk)
+            print("      combatSpellDetails: " .. table.concat(dk, ", "))
+          end
+        end
+      end
+    end
+  end
+  if sawAny then
+    ns.Print("cast count found on a spell row: %s", self.noCastCount and "NO" or "yes")
+  end
 end
 
 function Meter:Clock(s)
@@ -825,6 +1031,21 @@ local function strOut(v)
   return v:sub(1, 48)
 end
 
+-- Field by field, and only the fields that are actually there: a stats table
+-- written with zeroes for the modes nobody measured would come back next login
+-- indistinguishable from a measured zero, which is the one thing the file
+-- boundary must not do.
+local function statsOut(st)
+  if type(st) ~= "table" then return nil end
+  local out, any = {}, false
+  for _, f in ipairs(STAT_FIELDS) do
+    local v = numOut(st[f])
+    if v ~= nil then out[f] = v; any = true end
+  end
+  return any and out or nil
+end
+local statsIn = statsOut
+
 local function rowOut(r)
   return {
     name = strOut(r.name), class = strOut(r.class), identity = strOut(r.identity),
@@ -836,6 +1057,7 @@ local function rowOut(r)
     -- figure must not come back as a confident zero, and a round trip through a
     -- file is the easiest place to lose that distinction.
     kickable = numOut(r.kickable),
+    kick = statsOut(r.kick),
   }
 end
 
@@ -846,6 +1068,7 @@ local function pullOut(p)
     deaths = numOut(p.deaths) or 0,
     taken = numOut(p.taken) or 0,
     kickable = numOut(p.kickable),
+    kick = statsOut(p.kick),
     wholeRun = p.wholeRun and true or nil,
     rows = {},
   }
@@ -887,6 +1110,7 @@ local function rowIn(r)
     deaths = numOut(r.deaths) or 0,
     taken = numOut(r.taken) or 0,
     kickable = numOut(r.kickable),
+    kick = statsIn(r.kick),
     stored = true,
   }
 end
@@ -899,6 +1123,7 @@ local function pullIn(p)
     deaths = numOut(p.deaths) or 0,
     taken = numOut(p.taken) or 0,
     kickable = numOut(p.kickable),
+    kick = statsIn(p.kick),
     wholeRun = p.wholeRun and true or nil,
     rows = {}, stored = true,
   }
@@ -1383,7 +1608,45 @@ function Meter:View(key)
   end
 
   local rows, plain = self:Rows("current")
-  return rows or {}, plain ~= false, self:LiveLabel(), "live"
+  rows = rows or {}
+  -- MEASURED 2026-10-03, Voidscar Arena +11: this is the view the player was
+  -- looking at -- "key total 18:44" is LiveLabel, not the run segment -- and it
+  -- had never called the drill-down at ALL. kickable was only ever computed in
+  -- Snapshot, i.e. on a harvested pull, so on the live segment the column was
+  -- structurally blank in every key ever run, while the footer underneath it
+  -- said "none of the 158 known interruptible casts hit anyone" -- a
+  -- measurement, asserted by a code path that took none.
+  self:FillKickable(rows, "current", plain ~= false)
+  return rows, plain ~= false, self:LiveLabel(), "live"
+end
+
+-- Annotate a live row list with the per-spell drill-down, and record WHY when
+-- there is nothing to show. The reason is kept because a blank column has six
+-- possible causes and only one of them -- "no known interruptible spell hit
+-- anyone" -- is a fact about the fight rather than about the API or about us.
+--
+-- Only ever runs on a plain segment: the drill-down reads amounts, which is
+-- illegal while they are secret.
+function Meter:FillKickable(rows, which, plain)
+  self.kickableWhy = nil
+  if not plain then self.kickableWhy = "in-combat"; return rows end
+  if self:KickableMode().field == false then self.kickableWhy = "off"; return rows end
+
+  local worst
+  -- Reason precedence: the thing furthest from the player's control wins, so a
+  -- party where one row drilled down fine and four were refused reports the
+  -- refusal rather than the one row's happy answer.
+  local RANK = { ["no-match"] = 1, ["empty"] = 2, ["no-count"] = 3, ["no-unit"] = 4,
+                 ["no-source"] = 5, ["no-spells"] = 6, ["no-session"] = 7,
+                 ["refused"] = 8, ["secret-guid"] = 9, ["no-metric"] = 10 }
+  for _, row in ipairs(rows or {}) do
+    local value, by, stats, why = self:Kickable(which, row.unitGUID or row.guid)
+    row.kick, row.kickableBy = stats, by
+    row.kickable = stats and stats.damage or nil
+    if why and (not worst or (RANK[why] or 0) > (RANK[worst] or 0)) then worst = why end
+  end
+  self.kickableWhy = worst
+  return rows
 end
 
 -- A snapshot is cumulative; a pull is the difference between two of them.
@@ -1404,8 +1667,12 @@ local function diffSnapshot(snap, base)
   local was = {}
   for _, r in ipairs(base.rows) do was[rowKey(r)] = r end
 
+  -- kickable is NOT seeded to 0 here. It used to be, and `(r.kickable or 0) -
+  -- ...` below turned every unmeasured pull into a measured zero on the way
+  -- through the differencing path -- the same R-34 lie the run total was fixed
+  -- for, reintroduced one function over.
   local out = { rows = {}, duration = (snap.duration or 0) - (base.duration or 0),
-                kicks = 0, deaths = 0, taken = 0, kickable = 0 }
+                kicks = 0, deaths = 0, taken = 0, kickable = nil }
   for _, r in ipairs(snap.rows) do
     local b = was[rowKey(r)]
     local d = {
@@ -1413,14 +1680,25 @@ local function diffSnapshot(snap, base)
       kicks = r.kicks - (b and b.kicks or 0),
       taken = r.taken - (b and b.taken or 0),
       deaths = r.deaths - (b and b.deaths or 0),
-      kickable = (r.kickable or 0) - (b and b.kickable or 0),
+      kickable = r.kickable and (r.kickable - (b and b.kickable or 0)) or nil,
     }
+    -- Cumulative too, so the same subtraction applies -- and the same rule: a
+    -- field nobody measured stays absent instead of arriving as a zero.
+    if r.kick then
+      d.kick = {}
+      for _, f in ipairs(STAT_FIELDS) do
+        if r.kick[f] ~= nil then
+          d.kick[f] = r.kick[f] - ((b and b.kick and b.kick[f]) or 0)
+        end
+      end
+    end
     -- Per-spell kickable breakdowns are cumulative too and cannot be subtracted
     -- meaningfully, so a delta carries the total only.
     out.kicks = out.kicks + d.kicks
     out.taken = out.taken + d.taken
     out.deaths = out.deaths + d.deaths
-    out.kickable = out.kickable + d.kickable
+    if d.kickable then out.kickable = (out.kickable or 0) + d.kickable end
+    if d.kick then out.kick = addStats(out.kick, d.kick) end
     out.rows[#out.rows + 1] = d
   end
   return out

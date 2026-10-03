@@ -38,7 +38,7 @@ local C1_W = WIDTH - 16 - (C2_W + C3_W + C4_W + C5_W + GAP * 4)
 local HEAD_Y = 22
 local ROWS_Y = HEAD_Y + ROW_H
 
-local frame, rows, menu, clearBox
+local frame, rows, menu, clearBox, colBox
 
 local function namesOf(list, limit)
   local out = {}
@@ -136,22 +136,32 @@ local function meterTooltip(p)
     GameTooltip:AddLine("inspected, so there is no breakdown until the pull ends.", 0.6, 0.6, 0.6)
   end
 
-  if p.kickable and p.kickable > 0 then
+  local kv = ns.Meter:KickValue(p)
+  if kv and kv > 0 then
+    local mode = ns.Meter:KickableMode()
+    local count = (mode.key == "casts" or mode.key == "spells")
+    local function fmt(v) return count and tostring(v) or ns.Short(v) end
     GameTooltip:AddLine(" ")
-    GameTooltip:AddDoubleLine("From spells proven interruptible", ns.Short(p.kickable),
+    GameTooltip:AddDoubleLine("From spells proven interruptible", fmt(kv),
       1, 0.6, 0.2, 1, 0.6, 0.2)
     for i = 1, math.min(#(p.kickableBy or {}), 6) do
       local sp = p.kickableBy[i]
       local name = (C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(sp.spellID))
         or tostring(sp.spellID)
-      GameTooltip:AddDoubleLine(name, ns.Short(sp.amount), 0.8, 0.8, 0.8, 1, 0.82, 0)
+      -- Each line in the same unit as the column above it, so the rows add up
+      -- to the figure they are a breakdown of.
+      local v = (mode.key == "casts" and sp.casts)
+        or (mode.key == "spells" and 1)
+        or (mode.key == "overkill" and sp.overkill)
+        or sp.amount
+      GameTooltip:AddDoubleLine(name, v and fmt(v) or "-", 0.8, 0.8, 0.8, 1, 0.82, 0)
     end
   end
 
   GameTooltip:AddLine(" ")
   GameTooltip:AddLine("Interrupts pressed -- not casts missed.", 1, 0.6, 0.2)
-  GameTooltip:AddLine("\"kickable\" is damage from spells known to be stoppable", 0.7, 0.7, 0.7)
-  GameTooltip:AddLine("-- a cost, not a count of missed casts.", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine(("last column: %s"):format(ns.Meter:KickableMode().note), 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("Which casts got through is still the parser's answer.", 0.7, 0.7, 0.7)
   local learned, boot, src = ns.KickableCounts()
   GameTooltip:AddLine(("%d proven in your logs, %d from %s."):format(
     learned, boot, src or "the dungeon list"), 0.7, 0.7, 0.7)
@@ -305,6 +315,30 @@ function Panel:Build()
     GameTooltip:Show()
   end)
   frame.clear:SetScript("OnLeave", function(self)
+    self.text:SetTextColor(0.5, 0.5, 0.5)
+    GameTooltip:Hide()
+  end)
+
+  -- The last column answered exactly one question -- how much damage from
+  -- proven-interruptible spells -- and the heading said "kickable", which reads
+  -- like a count. It is a picker now, in the title bar rather than behind a
+  -- slash command, for the same reason clearing moved there.
+  frame.cols = CreateFrame("Button", nil, frame)
+  frame.cols:SetPoint("TOPLEFT", 102, -5)
+  frame.cols:SetSize(34, ROW_H)
+  frame.cols.text = frame.cols:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  frame.cols.text:SetPoint("LEFT")
+  frame.cols.text:SetText("cols")
+  frame.cols:SetScript("OnClick", function() Panel:Cols() end)
+  frame.cols:SetScript("OnEnter", function(self)
+    self.text:SetTextColor(1, 0.82, 0)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine("Column", 1, 1, 1)
+    GameTooltip:AddLine("Choose what the last column shows: kickable damage,", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine("casts, how many spells, overkill -- or hide it.", 0.7, 0.7, 0.7)
+    GameTooltip:Show()
+  end)
+  frame.cols:SetScript("OnLeave", function(self)
     self.text:SetTextColor(0.5, 0.5, 0.5)
     GameTooltip:Hide()
   end)
@@ -466,6 +500,11 @@ function Panel:Menu(show)
   if show == nil then show = not m:IsShown() end
   if not show then m:Hide(); return m end
 
+  -- Three dialogs, one corner. Two of them stacked is how you click the one you
+  -- could not see.
+  if colBox then colBox:Hide() end
+  if clearBox then clearBox:Hide() end
+
   local segs = (ns.Meter and ns.Meter:Segments()) or {}
   -- Segments only. The clear actions used to be appended here, which both hid
   -- them (they appeared only when there was something to take) and put an
@@ -551,6 +590,147 @@ function Panel:ClearBox()
   return c
 end
 
+-- --------------------------------------------------------- the column picker
+-- Five answers to one question, and the panel can only honestly give some of
+-- them on some clients -- so each is listed with whether it is actually
+-- available HERE, rather than the unavailable ones being quietly omitted. That
+-- omission is exactly what made clearing unfindable (R-39), and the same rule
+-- applies: offer it, grey it, say why.
+local COL_W = 272
+
+-- nil when the mode works, otherwise the reason it cannot be shown.
+function Panel:ModeBlocked(mode)
+  if mode.key == "casts" and ns.Meter.noCastCount then
+    return "this client's spell rows carry no count"
+  end
+  return nil
+end
+
+function Panel:ColBox()
+  if colBox then return colBox end
+  local c = CreateFrame("Frame", "UnkickedColBox", frame, "BackdropTemplate")
+  c:SetPoint("TOPLEFT", frame.cols, "BOTTOMLEFT", -4, -2)
+  c:SetFrameStrata("DIALOG")
+  c:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  c:SetBackdropColor(0, 0, 0, 0.95)
+  c:SetBackdropBorderColor(0.6, 0.5, 0.2, 1)
+  c:EnableMouse(true)
+  c.items = {}
+
+  c.head = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  c.head:SetPoint("TOPLEFT", 6, -6)
+  c.head:SetText("Last column shows")
+
+  c.foot = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  c.foot:SetPoint("BOTTOMLEFT", 6, 6)
+  c.foot:SetPoint("BOTTOMRIGHT", -6, 6)
+  c.foot:SetJustifyH("LEFT")
+  c.foot:SetWordWrap(true)
+  c.foot:SetText("Missed casts are the parser's answer, not the API's.")
+
+  c:Hide()
+  colBox = c
+  Panel.colFrame = c
+  return c
+end
+
+function Panel:Cols(show)
+  self:Build()
+  local c = self:ColBox()
+  if show == nil then show = not c:IsShown() end
+  if not show then c:Hide(); return c end
+  self:Menu(false)
+  self:Clear(false)
+
+  local modes = ns.Meter.KICKABLE_MODES
+  local cur = ns.Meter:KickableMode()
+  local ROW = ROW_H + 10
+  for i, m in ipairs(modes) do
+    local b = c.items[i]
+    if not b then
+      b = CreateFrame("Button", nil, c)
+      b:SetSize(COL_W - 12, ROW)
+      b:SetPoint("TOPLEFT", 6, -(6 + ROW_H + (i - 1) * ROW))
+      b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      b.text:SetPoint("TOPLEFT")
+      b.text:SetJustifyH("LEFT")
+      b.text:SetWordWrap(false)
+      b.note = b:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+      b.note:SetPoint("TOPLEFT", 10, -ROW_H + 4)
+      b.note:SetJustifyH("LEFT")
+      b.note:SetWordWrap(false)
+      b:SetScript("OnClick", function(self)
+        -- A mode this client cannot answer is still listed, so that the player
+        -- can see it exists and why it is dark -- but selecting it would leave
+        -- an empty column with no explanation, so it does not select.
+        if not self.mode or self.blocked then return end
+        ns.Meter:SetKickableMode(self.mode)
+        Panel:Cols(false)
+        Panel:Refresh()
+      end)
+      c.items[i] = b
+    end
+    local blocked = Panel:ModeBlocked(m)
+    b.mode = m.key
+    b.blocked = blocked and true or false
+    local name = (m.key == "off") and "nothing (hide it)" or m.key
+    if blocked then
+      b.text:SetText(("|cff606060%s|r"):format(name))
+      b.note:SetText(("|cff806030%s|r"):format(blocked))
+    elseif m.key == cur.key then
+      b.text:SetText(("|cffffd200%s  <|r"):format(name))
+      b.note:SetText(("|cff808080%s|r"):format(m.note))
+    else
+      b.text:SetText(name)
+      b.note:SetText(("|cff606060%s|r"):format(m.note))
+    end
+    b:Show()
+  end
+  for i = #modes + 1, #c.items do
+    c.items[i].mode = false
+    c.items[i]:Hide()
+  end
+  c:SetSize(COL_W, 6 + ROW_H + ROW * #modes + ROW_H + 8)
+  c:Show()
+  return c
+end
+
+-- The one line under an empty column. Six causes, and only "no known
+-- interruptible spell hit anyone" is a fact about the fight -- the rest are
+-- facts about the API, the segment, or us, and the player should not have to
+-- guess which they are looking at.
+function Panel:KickableNote(kind)
+  local M = ns.Meter
+  local mode = M:KickableMode()
+  if not mode.field then
+    return "|cff808080the last column is hidden -- click |r|cffffd200cols|r|cff808080 to bring it back|r"
+  end
+  local learned, boot = ns.KickableCounts()
+  local known = learned + boot
+  if known == 0 then
+    return "|cffff9933kickable: no interruptibility data -- run tools/gen-dungeon-interruptible.mjs|r"
+  end
+  -- A stored or harvested segment carries whatever was measured when it was
+  -- taken; nothing can drill into it now, so this is not a diagnosis of the API.
+  if kind ~= "live" then
+    return "|cff808080" .. M.KICKABLE_WHY["stored"] .. "|r"
+  end
+  local why = M.kickableWhy
+  if why == "no-match" then
+    return ("|cff808080kickable: none of the %d known interruptible casts hit anyone|r"):format(known)
+  end
+  local text = why and M.KICKABLE_WHY[why]
+  if not text then
+    return ("|cff808080%s|r"):format(mode.note)
+  end
+  local bad = (why == "secret-guid" or why == "refused" or why == "no-metric")
+  return ("|c%s%s: %s|r"):format(bad and "ffff9933" or "ff808080", mode.label ~= "" and mode.label or "kickable", text)
+end
+
 -- show == nil toggles. Rebuilt on every open so the counts are current and no
 -- armed confirmation survives a close.
 function Panel:Clear(show)
@@ -561,6 +741,7 @@ function Panel:Clear(show)
   -- Never both open: the box is anchored under a button the segment list
   -- overlaps, and two stacked dialogs is how you click the wrong one.
   self:Menu(false)
+  if colBox then colBox:Hide() end
 
   local scopes = (ns.Meter and ns.Meter:ClearScopes()) or {}
   local ROW = ROW_H + 10
@@ -650,6 +831,16 @@ local HEAD_COLOR = { kickable = "|cffff9933" }
 local function headLabel(key, by, desc, applied)
   local col = ns.Meter and ns.Meter:Column(key)
   local label = (col and col.label) or key
+  -- The last column answers whichever question the picker last set, so its
+  -- heading has to say which one. A heading that reads "kickable" over a count
+  -- of spells is the same class of fault as an arrow over rows that were never
+  -- sorted.
+  if key == "kickable" and ns.Meter then
+    local mode = ns.Meter:KickableMode()
+    label = mode.label ~= "" and mode.label or "kickable"
+    if mode.key == "casts" then label = "misses"
+    elseif mode.key == "spells" then label = "spells" end
+  end
   if key ~= by then
     return ("%s%s|r"):format(HEAD_COLOR[key] or "|cff808080", label)
   end
@@ -798,8 +989,15 @@ local function refreshMeter()
       -- Only ever a plain number: it is computed from the per-spell drill-down,
       -- which cannot run while the values are secret. Blank during a pull.
       row.c5:SetJustifyH("RIGHT")
-      row.c5:SetText(p.kickable and ("|cffff9933%s|r"):format(ns.Short(p.kickable)) or "")
-      if p.kickable then kickableBlank = false end
+      local kv = ns.Meter:KickValue(p)
+      local kmode = ns.Meter:KickableMode()
+      -- A count is a count: shortening 12 to "12" is fine, but running a count
+      -- through the damage formatter would print "12" for twelve and "1.2k" for
+      -- twelve hundred spells, which no column of spells will ever reach.
+      local shown = kv and ((kmode.key == "casts" or kmode.key == "spells")
+        and tostring(kv) or ns.Short(kv)) or nil
+      row.c5:SetText(shown and ("|cffff9933%s|r"):format(shown) or "")
+      if kv then kickableBlank = false end
       row:Show()
     else
       row.rec, row.player = nil, nil
@@ -830,19 +1028,10 @@ local function refreshMeter()
   elseif kind == "live" and not ns.Meter.run then
     frame.footer:SetText("|cff808080not in a key -- per-pull totals start at CHALLENGE_MODE_START|r")
   elseif kickableBlank then
-    -- The column is empty for EVERY row, so say which of the two reasons it is
-    -- rather than letting a blank column read as "nothing was kickable". A
-    -- refused drill-down is ours to report; an empty spell list is the data
-    -- file's, and only one of those is worth the player doing anything about.
-    local learned, boot = ns.KickableCounts()
-    frame.footer:SetText(ns.Meter.secretGuidRefusals > 0
-      and "|cffff9933kickable: the API will not name a player's spells (guid is secret)|r"
-      or (learned + boot) == 0
-      and "|cffff9933kickable: no interruptibility data -- run tools/gen-dungeon-interruptible.mjs|r"
-      or ("|cff808080kickable: none of the %d known interruptible casts hit anyone|r")
-         :format(learned + boot))
+    frame.footer:SetText(Panel:KickableNote(kind))
   else
-    frame.footer:SetText("|cff808080kickable = dmg from proven-interruptible spells, not a cast count|r")
+    local m = ns.Meter:KickableMode()
+    frame.footer:SetText(("|cff808080%s|r"):format(m.note))
   end
 end
 

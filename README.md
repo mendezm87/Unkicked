@@ -163,6 +163,42 @@ A stored key lists its total; select it and its own pulls appear underneath,
 because five keys' worth of pulls is a menu taller than the screen. `/uk history`
 is the same list in chat.
 
+### Choosing what the last column shows
+
+The last column used to answer exactly one question — how much damage each
+player took from spells that have been proven interruptible — under a heading
+that read `kickable`, which looks like a count. **The `cols` button in the
+panel's title bar** picks which question it answers:
+
+| mode | what it shows |
+|---|---|
+| `damage` | damage taken from spells proven interruptible |
+| `casts` | casts of those spells — **only if the client reports a count** |
+| `spells` | how many different interruptible spells hit them |
+| `overkill` | overkill from those spells — what actually killed someone |
+| `off` | hide the column |
+
+The heading renames itself to match, and so does the tooltip's per-spell
+breakdown, so the rows always add up to the figure above them. Switching mode
+re-reads the pulls you already have rather than blanking them — every mode's
+figure is stored at harvest time, and survives a logout.
+
+**`casts` is listed but will usually be dark.** `DamageMeterCombatSpell` carries
+`spellID`, `totalAmount`, `amountPerSecond`, `creatureName`, `overkillAmount`,
+`isAvoidable`, `isDeadly` and `combatSpellDetails` — no count of any kind. The
+addon looks for one anyway, under seven plausible names, because a documentation
+page is not the client; when it finds none the mode is greyed with the reason and
+refuses to select, and `/uk audit` prints the field names a real damage row
+actually carries so the next run settles it.
+
+**How many casts went unkicked is still the parser's answer.** The panel can only
+report what landed; which casts got through needs `WoWCombatLog.txt`.
+
+When the column is blank for everyone, the footer says which of eleven reasons it
+is — a refused drill-down, a segment stored without one, a mode this client
+cannot answer, or genuinely nothing kickable hitting anyone. Only the last of
+those is a fact about the fight.
+
 ### Clearing it
 
 A harvested pull cannot be got back by playing again — the session it came from
@@ -400,6 +436,7 @@ prints exactly which parts of the old design the client still refuses.
 | `/uk pull <n>` | panel shows pull *n* |
 | `/uk history` | keys kept from earlier logins; `/uk history <n>` shows one |
 | `/uk forget` | clear stored keys or harvested pulls — asks which, see above |
+| `/uk audit` | dump the raw metric rows, and whether a spell row carries a cast count |
 | `/uk pulls` | toggle the one-line chat report after each pull |
 | `/uk` | toggle the panel |
 | `/uk clear` | drop the current list |
