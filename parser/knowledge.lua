@@ -46,8 +46,49 @@ function M.load(path, exportPath)
   return self
 end
 
+-- The bootstrap list: Data/DungeonInterruptible.lua, generated from Mythic
+-- Dungeon Tools, which curates interruptibility for every dungeon in the pool.
+--
+-- Why this is worth having even though the learned list is PROOF and this is
+-- not: proof only covers dungeons you have already run. MEASURED on the Ruby
+-- Life Pools +10 log -- cold (nothing known) it reports 149 unkicked casts /
+-- 26.3m, warm (the nine ids already known) it reports 150 / 26.4m. The missing
+-- cast is the first one, which happened before any kick proved the spell
+-- stoppable. Multiply that by a dungeon whose casts are never interrupted at
+-- all and the first run reports nothing whatsoever, which is exactly what
+-- happened. The bootstrap removes the cold start.
+--
+-- It is loaded SECOND and never written back, so proof and a hand-written
+-- [id] = false both outrank it.
+function M:bootstrap(path)
+  local chunk = loadfile(path)
+  if not chunk then return 0 end
+  local fake = {}
+  local ok = pcall(chunk, "Unkicked", fake)
+  if not ok or type(fake.DUNGEON_INTERRUPTIBLE) ~= "table" then return 0 end
+  self.boot, self.bootSource = {}, fake.DUNGEON_INTERRUPTIBLE_SOURCE
+  local n = 0
+  for k, v in pairs(fake.DUNGEON_INTERRUPTIBLE) do
+    if type(k) == "number" then self.boot[k] = v; n = n + 1 end
+  end
+  return n
+end
+
 -- nil = unknown, true = interruptible, false = asserted immune.
-function M:get(spellID) return self.known[spellID] end
+-- Our own logs first, the dungeon list only where they are silent.
+function M:get(spellID)
+  local own = self.known[spellID]
+  if own ~= nil then return own end
+  return self.boot and self.boot[spellID] or nil
+end
+
+-- Where a yes came from, for the report: "learned" (we saw it stopped) or the
+-- bootstrap's own source string. Never claims proof it does not have.
+function M:sourceOf(spellID)
+  if self.known[spellID] ~= nil then return "learned" end
+  if self.boot and self.boot[spellID] ~= nil then return self.bootSource or "dungeon list" end
+  return nil
+end
 
 -- Called when a SPELL_INTERRUPT proves a spell interruptible.
 function M:observe(spellID, spellName)

@@ -349,7 +349,18 @@ function Session:line(line)
   if event == "SPELL_INTERRUPT" then
     self.stats.interrupts = self.stats.interrupts + 1
     local stopped = args[11]
-    if self.knowledge and self.knowledge:observe(stopped, f[14]) then
+    -- The unit whose cast was stopped must be an NPC. A mob interrupting one of
+    -- US fires the same subevent, and learning from it files a PLAYER spell as
+    -- "an enemy cast that can be kicked". That really happened: the shipped seed
+    -- carried Incinerate, Lava Burst, Disintegrate and the evoker's Fire Breath
+    -- (29722 / 51505 / 356995 / 357208) because party members were interrupted
+    -- in Kings' Rest. They can never match anything in the kickable column --
+    -- a player's own spell does not appear in the party's DamageTaken -- but
+    -- they made the list look like proof of something it never saw.
+    local victim = f[6]
+    local npc = type(victim) == "string"
+      and (victim:match("^Creature%-") or victim:match("^Vehicle%-")) ~= nil
+    if npc and self.knowledge and self.knowledge:observe(stopped, f[14]) then
       self:applyKnowledge(stopped)
     end
   end

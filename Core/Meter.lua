@@ -339,6 +339,36 @@ end
 -- Order comes from the Interrupts list, because the API returns it ALREADY
 -- SORTED by the metric asked for and list position is the only ranking that
 -- exists when the amounts cannot be compared.
+-- A drill-down key that does NOT come from C_DamageMeter.
+--
+-- MEASURED, 2026-10-01 (Voidscar Arena +10, /uk audit): a row's `guid` comes
+-- back SECRET even after the key ended, with the name and totals beside it
+-- plain. So Kickable keyed on row.guid could never run once -- the column has
+-- never produced a number on a live client, in any dungeon, regardless of how
+-- much interruptibility data we had.
+--
+-- But a party member's GUID is not this API's to withhold: UnitGUID("player")
+-- and ("party1".."party4") are ordinary unit API. So resolve the key from the
+-- UNIT and join it to the row on the only fields that stay readable --
+-- isLocalPlayer (NeverSecret) and the name. ns.GUID drops an unreadable one, so
+-- a restricted map degrades to nil rather than erroring.
+local function baseName(n)
+  return type(n) == "string" and (n:match("^([^-]+)") or n) or nil
+end
+
+local function unitGUIDFor(row)
+  if row.isYou then return ns.GUID("player") end
+  local want = baseName(row.name)
+  if not want then return nil end
+  if type(GetNumGroupMembers) ~= "function" or type(UnitName) ~= "function" then return nil end
+  local n = (GetNumGroupMembers() or 0) - 1      -- party1..partyN-1, player excluded
+  for i = 1, math.max(0, n) do
+    local unit = "party" .. i
+    if baseName(UnitName(unit)) == want then return ns.GUID(unit) end
+  end
+  return nil
+end
+
 function Meter:Rows(which)
   if not self:Available() then return nil end
 
@@ -401,6 +431,7 @@ function Meter:Rows(which)
     -- Rank, not value: usable in combat, when the value is not.
     row.rank = { kicks = lookupPos(iKicks, row), taken = lookupPos(iTaken, row) }
     if ns.IsSecret(row.kicks) or ns.IsSecret(row.taken) then secret = true end
+    row.unitGUID = unitGUIDFor(row)
   end
 
   return mergeByName(foldPets(rows)), not secret
@@ -541,8 +572,7 @@ end
 --
 -- Needs a readable guid, so like every drill-down it is out-of-combat only.
 function Meter:Kickable(which, guid)
-  local known = ns.KNOWN_INTERRUPTIBLE
-  if not known or guid == nil then return nil end
+  if guid == nil then return nil end
   local spells = self:Spells(which, guid, nil, "DamageTaken")
   if not spells then return nil end
 
@@ -551,7 +581,7 @@ function Meter:Kickable(which, guid)
     local sp = spells[i]
     local id = ns.Plain(sp.spellID)
     local amount = tonumber(ns.Plain(sp.totalAmount))
-    if id and amount and known[id] == true then
+    if id and amount and ns.IsKickable(id) == true then
       total = total + amount
       by[#by + 1] = { spellID = id, amount = amount }
     end
@@ -576,7 +606,9 @@ function Meter:Snapshot(which)
       taken = tonumber(row.taken) or 0,
       deaths = row.deaths or 0,
     }
-    r.kickable, r.kickableBy = self:Kickable(which, row.guid)
+    -- row.unitGUID first: the row's own guid is secret on a live client (see
+    -- unitGUIDFor), so without the unit-token key this is always nil.
+    r.kickable, r.kickableBy = self:Kickable(which, row.unitGUID or row.guid)
     out.kickable = (out.kickable or 0) + (r.kickable or 0)
     out.kicks = out.kicks + r.kicks
     out.deaths = out.deaths + r.deaths

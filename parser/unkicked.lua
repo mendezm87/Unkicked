@@ -68,6 +68,7 @@ unkicked -- reports the enemy casts nobody stopped, per pull, from WoWCombatLog.
   --json              one JSON object per pull on stdout
   --no-color          plain output
   --knowledge PATH    interruptibility knowledge file
+  --no-bootstrap     ignore Data/DungeonInterruptible.lua; report only proof
   --help
 
 With no FILE, looks in the usual WoW Logs directories for WoWCombatLog.txt.
@@ -112,6 +113,7 @@ while i <= #a do
   elseif v == "--quiet-gap" then i = i + 1; opts.quietGap = tonumber(a[i]) or 5
   elseif v == "--min-damage" then i = i + 1; opts.minDamage = tonumber(a[i]) or 0
   elseif v == "--knowledge" then i = i + 1; opts.knowledge = a[i]
+  elseif v == "--no-bootstrap" then opts.noBootstrap = true
   elseif v == "--poll" then i = i + 1; opts.poll = tonumber(a[i]) or 1
   elseif v == "--help" or v == "-h" then usage(); os.exit(0)
   elseif v:sub(1, 1) == "-" then io.stderr:write("unknown option " .. v .. "\n"); usage(); os.exit(2)
@@ -152,6 +154,10 @@ end
 -- ------------------------------------------------------------------ the engine
 local ns = host.init(ROOT)
 local knowledge = Knowledge.load(opts.knowledge, HERE .. "/../Data/Interruptible.lua")
+-- The per-dungeon bootstrap, so a dungeon you have never parsed still reports.
+-- Proof in the learned file always wins; see Knowledge:get.
+local bootCount = opts.noBootstrap and 0
+  or knowledge:bootstrap(HERE .. "/../Data/DungeonInterruptible.lua")
 
 local emitted = 0
 local skippedPulls, skippedRuns, reportedRuns = 0, {}, 0
@@ -281,6 +287,11 @@ else
     .. ", %d spells newly proven kickable%s\n"):format(
     session.lines, session.segments, emitted, session.stats.interrupts, session.stats.spends,
     knowledge.learned, session.skipped > 0 and (", " .. session.skipped .. " lines skipped") or ""))
+  if bootCount and bootCount > 0 then
+    io.stderr:write(("unkicked: %d interruptible casts known from %s before this log "
+      .. "(--no-bootstrap to report only what your own logs proved)\n")
+      :format(bootCount, knowledge.bootSource or "the dungeon list"))
+  end
   if opts.scope ~= "all" and skippedPulls > 0 then
     io.stderr:write(("unkicked: %d pulls outside a key window were not counted\n"):format(skippedPulls))
   end

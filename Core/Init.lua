@@ -128,6 +128,38 @@ function ns.GUID(unit)
   return ns.Plain(guid)
 end
 
+-- Is this enemy cast one somebody could have interrupted?
+--
+-- Two sources, deliberately ranked:
+--   1. ns.KNOWN_INTERRUPTIBLE -- PROOF. A SPELL_INTERRUPT was observed stopping
+--      this spell in one of your own logs. `false` here is a hand-written
+--      assertion that a cast is immune, and it beats everything.
+--   2. ns.DUNGEON_INTERRUPTIBLE -- BOOTSTRAP, from Mythic Dungeon Tools, which
+--      curates interruptibility for every dungeon in the pool. This is what
+--      stops a dungeon you have never parsed from reporting nothing: Ruby Life
+--      Pools shared zero spell ids with the three dungeons parsed before it.
+--
+-- Returns nil for "no idea", never false-as-a-guess, so the panel can tell the
+-- difference between a cast we know is immune and one we have never seen.
+function ns.IsKickable(spellID)
+  if spellID == nil then return nil end
+  local learned = ns.KNOWN_INTERRUPTIBLE and ns.KNOWN_INTERRUPTIBLE[spellID]
+  if learned ~= nil then return learned end
+  local boot = ns.DUNGEON_INTERRUPTIBLE and ns.DUNGEON_INTERRUPTIBLE[spellID]
+  if boot ~= nil then return boot end
+  return nil
+end
+
+-- How many casts each source vouches for -- the panel says this when the column
+-- is empty, so "we have no data" and "the data says nobody ate one" are
+-- distinguishable instead of both rendering as a blank cell.
+function ns.KickableCounts()
+  local learned, boot = 0, 0
+  for _, v in pairs(ns.KNOWN_INTERRUPTIBLE or {}) do if v == true then learned = learned + 1 end end
+  for _, v in pairs(ns.DUNGEON_INTERRUPTIBLE or {}) do if v == true then boot = boot + 1 end end
+  return learned, boot, ns.DUNGEON_INTERRUPTIBLE_SOURCE
+end
+
 -- True when the client has addon restrictions in force -- i.e. exactly the
 -- content this addon was built for (dungeon, raid, M+, encounter, rated PvP).
 function ns.Restricted()

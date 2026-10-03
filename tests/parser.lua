@@ -194,6 +194,20 @@ eq(killed, "Rek-Illidan", "the cast that killed someone is attributed to the dea
 print("\n[parser] the log proves interruptibility the client will no longer tell us")
 eq(knowledge:get(400001), true, "a spell seen being interrupted is proven kickable")
 eq(knowledge:get(400003), nil, "a spell never interrupted stays unknown, never assumed")
+
+-- P-26: a mob interrupting US fires the same subevent. Learning from it files a
+-- PLAYER spell as an enemy cast that can be kicked, which is how Incinerate,
+-- Lava Burst, Disintegrate and the evoker's Fire Breath ended up in the shipped
+-- seed. The victim must be an NPC.
+local k2 = Knowledge.load("/dev/null")
+local s2 = Session.new(host.init("."), { host = host, quietGap = 5, knowledge = k2 })
+s2:line("9/30/2026 21:43:00.000-7  COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.0,PROJECT_ID,1")
+s2:line('9/30/2026 21:43:07.000-7  SPELL_INTERRUPT,Creature-0-1-2-3-4-0009,"Tideburn Adept",0xa48,0x0,'
+  .. 'Player-1-AAAA,"Rek-Illidan",0x511,0x0,1766,"Kick",1,29722,"Incinerate",4')
+eq(k2:get(29722), nil, "a party member's own cast being stopped teaches us nothing")
+s2:line('9/30/2026 21:43:08.000-7  SPELL_INTERRUPT,Player-1-AAAA,"Rek-Illidan",0x511,0x0,'
+  .. 'Creature-0-1-2-3-4-0009,"Tideburn Adept",0xa48,0x0,1766,"Kick",1,400009,"Tidal Bolt",8')
+eq(k2:get(400009), true, "an NPC's cast being stopped still proves the spell kickable")
 local firstHex
 for _, r in ipairs(p1.records) do if r.spellID == 400002 then firstHex = r end end
 eq(firstHex.interruptible, true, "a cast recorded BEFORE the proof arrives is back-filled")

@@ -215,13 +215,43 @@ returns configID `-1`. So the model is inferred from the combat log:
 
 ## Keeping the data current
 
-Nothing is hand-maintained. Both data files are generated from pinned
-[wago.tools](https://wago.tools) DB2 exports:
+Nothing is hand-maintained. The cooldown and crowd-control tables are generated
+from pinned [wago.tools](https://wago.tools) DB2 exports, and the per-dungeon
+interruptible list from Mythic Dungeon Tools:
 
 ```sh
-node tools/gen-interrupt-data.mjs --report   # base cooldowns + talent gate
-node tools/gen-cc-data.mjs                   # blocking-aura table
+node tools/gen-interrupt-data.mjs --report        # base cooldowns + talent gate
+node tools/gen-cc-data.mjs                        # blocking-aura table
+node tools/gen-dungeon-interruptible.mjs --check  # which enemy casts can be kicked
 ```
+
+### Which enemy casts can be interrupted
+
+There are two lists and they rank:
+
+1. `Data/Interruptible.lua` — **proof**. A `SPELL_INTERRUPT` in one of your own
+   logs was seen stopping the spell. A hand-written `[id] = false` here asserts a
+   cast is immune and beats everything.
+2. `Data/DungeonInterruptible.lua` — **bootstrap**, 126 casts across 16 dungeons,
+   generated from [Mythic Dungeon Tools](https://github.com/Nnoggie/MythicDungeonTools)
+   (`Midnight/`), which curates it per dungeon enemy. Loaded second, never
+   written back.
+
+The bootstrap exists because proof only covers dungeons you have already run, and
+Ruby Life Pools shared **zero** spell ids with the three dungeons parsed before
+it. `--check` cross-checks the two: 30 of 30 ids our logs proved are in MDT's
+list as well.
+
+Blizzard's own DB2 cannot answer this. `SpellInterrupts.InterruptFlags` sets
+`ON_INTERRUPT_CAST` on 53,444 of 122,119 spells — including your own Fireball,
+and 31 of the 34 NPC casts in a Ruby Life Pools log where only 9 were ever
+stopped. The flag says what kind of interruption applies to a cast *template*;
+whether a given creature's cast is immune is set by the encounter script and is
+not in any DB2 we can read.
+
+MDT is GPL-2.0 and Unkicked is MIT. The generator reproduces spell ids only and
+names MDT as the source in the output; `--no-bootstrap` runs the parser on proof
+alone if you would rather not ship a derived file.
 
 Each run pins to the current live retail build and writes that build string into
 the output, so `git diff` on patch day **is** the changelog. Run it on every `.x`

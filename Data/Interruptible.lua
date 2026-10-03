@@ -5,16 +5,12 @@
 -- damage the party ate came from casts that COULD have been stopped.
 local ADDON, ns = ...
 ns.KNOWN_INTERRUPTIBLE = {
-  [29722] = true,
-  [51505] = true,
   [267273] = true,
   [267763] = true,
   [269972] = true,
   [270492] = true,
   [270901] = true,
   [270920] = true,
-  [356995] = true,
-  [357208] = true,  -- Fire Breath
   [371984] = true,  -- Frostbolt
   [372743] = true,  -- Ice Shield
   [372808] = true,  -- Frigid Shard

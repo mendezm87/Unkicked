@@ -27,7 +27,8 @@ local ns
 local function loadAddon()
   ns = {}
   local files = {
-    "Data/InterruptData.lua", "Data/CCData.lua", "Data/Interruptible.lua",
+    "Data/InterruptData.lua", "Data/CCData.lua",
+    "Data/DungeonInterruptible.lua", "Data/Interruptible.lua",
     "Core/Init.lua", "Core/Pets.lua", "Core/Logging.lua", "Core/Meter.lua", "Core/Nameplates.lua",
     "Core/KickTracker.lua", "Core/CastTracker.lua",
   }
@@ -654,6 +655,50 @@ do
     "and it refuses to run against a secret GUID rather than erroring the draw")
   stub.meter.secret = false
   stub.meter.damageSpells = {}
+
+  -- ----------------------------------- R-35: the dungeon bootstrap, and its rank
+  -- MDT's per-dungeon list fills the cold start; our own logs still overrule it.
+  local BOOT = next(ns.DUNGEON_INTERRUPTIBLE)
+  ok(BOOT ~= nil, "the addon ships MDT's per-dungeon interruptible list")
+  eq(ns.IsKickable(BOOT), true, "a cast MDT vouches for is kickable before we ever see one")
+  eq(ns.IsKickable(9999999), nil, "an unheard-of cast stays unknown, never guessed false")
+  local saved = ns.KNOWN_INTERRUPTIBLE[BOOT]
+  ns.KNOWN_INTERRUPTIBLE[BOOT] = false
+  eq(ns.IsKickable(BOOT), false,
+    "a hand-written [id]=false in our own list beats MDT -- that is how you say MDT is wrong")
+  ns.KNOWN_INTERRUPTIBLE[BOOT] = saved
+  local nLearned, nBoot = ns.KickableCounts()
+  ok(nLearned > 0 and nBoot > 0, "and the panel can say how many each source vouches for")
+
+  -- A dungeon we have never parsed now reports: a spell known only to MDT counts.
+  stub.meter.damageSpells = { ["P-h"] = { { spellID = BOOT, totalAmount = 120000 } } }
+  eq(ns.Meter:Kickable("current", "P-h"), 120000,
+    "damage from a cast only MDT knows about still lands in the kickable column")
+  stub.meter.damageSpells = {}
+
+  -- --------------------------- R-36: the drill-down key comes from the UNIT, not the row
+  -- MEASURED on a real key: C_DamageMeter hands back a secret guid even out of
+  -- combat, so a drill-down keyed on row.guid could never run once. UnitGUID is
+  -- not this API's to withhold, so the row is joined to a party unit instead.
+  stub.units.player = { guid = "P-s", name = "Selfy", class = "MAGE" }
+  stub.units.party1 = { guid = "P-h", name = "Healer-Illidan", class = "PRIEST" }
+  stub.groupSize = 2
+  stub.meter.secretGuids = true
+  stub.meter.damageSpells = { ["P-h"] = { { spellID = BOOT, totalAmount = 77000 } } }
+  local urows = ns.Meter:Rows("current")
+  local joined
+  for _, r in ipairs(urows or {}) do if r.name == "Healer" then joined = r end end
+  ok(joined ~= nil, "the row is still built when its own guid is unreadable")
+  eq(joined and joined.guid, nil, "and that guid really is unusable")
+  eq(joined and joined.unitGUID, "P-h", "but UnitGUID('party1') supplies a usable key")
+  local snap2 = ns.Meter:Snapshot("current")
+  local got
+  for _, r in ipairs(snap2 and snap2.rows or {}) do if r.name == "Healer" then got = r end end
+  eq(got and got.kickable, 77000,
+    "so the kickable column fills on a client that will not name a player's spells")
+  stub.meter.secretGuids = false
+  stub.meter.damageSpells = {}
+  stub.groupSize = 0
 
   -- ------------------------------------------------------------- the key ledger
   stub.challenge = { level = 13, mapID = 500, mapName = "The Blinding Vale", deaths = 3 }

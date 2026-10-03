@@ -3,25 +3,21 @@
 --   false = you asserted by hand that this cast cannot be interrupted
 -- Safe to edit. Regenerated additively; hand-written entries are preserved.
 return {
-  [29722] = true,
-  [51505] = true,
   [267273] = true,
   [267763] = true,
   [269972] = true,
   [270492] = true,
   [270901] = true,
   [270920] = true,
-  [356995] = true,
-  [357208] = true,  -- Fire Breath
-  [371984] = true,  -- Frostbolt
-  [372743] = true,  -- Ice Shield
-  [372808] = true,  -- Frigid Shard
-  [373017] = true,  -- Blaze Volley
-  [384194] = true,  -- Cinderbolt
-  [385310] = true,  -- Storm Bolt
-  [392576] = true,  -- Thunder Blast
-  [400001] = true,
-  [400002] = true,
+  [371984] = true,
+  [372743] = true,
+  [372808] = true,
+  [373017] = true,
+  [384194] = true,
+  [385310] = true,
+  [392576] = true,
+  [400001] = true,  -- Tidal Bolt
+  [400002] = true,  -- Hex Bolt
   [1228176] = true,
   [1233398] = true,
   [1235616] = true,
@@ -37,6 +33,6 @@ return {
   [1298899] = true,
   [1299938] = true,
   [1301834] = true,
-  [1305955] = true,  -- Fiery Blast
+  [1305955] = true,
   [1310324] = true,
 }

@@ -230,6 +230,9 @@ stub.meter = {
   secret = false,
   secretNames = false,  -- measured on a real key: a name can be unreadable
                         -- while the amount beside it is plain
+  secretGuids = false,  -- MEASURED on a real key (/uk audit, Voidscar +10): the
+                        -- guid came back secret with the name and total beside it
+                        -- plain, and stayed secret after the key ended
   emptyCurrent = false,   -- reproduces the post-reset empty Current session
   duration = { current = 60, overall = 300 },
   players = { current = {}, overall = {} },
@@ -265,7 +268,8 @@ local function sourcesFor(which, attr)
       name = (stub.meter.secretNames and p.name ~= nil) and stub.secret(p.name)
         or (stub.meter.plainNames and p.name)
         or maybeSecret(p.name),
-      guid = maybeSecret(p.guid),
+      guid = (stub.meter.secretGuids and p.guid ~= nil) and stub.secret(p.guid)
+        or maybeSecret(p.guid),
     }
     if attr == E.Deaths then
       -- one entry per death, not a player with a count

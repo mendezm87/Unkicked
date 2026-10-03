@@ -150,8 +150,11 @@ local function meterTooltip(p)
 
   GameTooltip:AddLine(" ")
   GameTooltip:AddLine("Interrupts pressed -- not casts missed.", 1, 0.6, 0.2)
-  GameTooltip:AddLine("\"kickable\" is damage from spells the parser has PROVEN", 0.7, 0.7, 0.7)
-  GameTooltip:AddLine("can be stopped -- a cost, not a count of missed casts.", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("\"kickable\" is damage from spells known to be stoppable", 0.7, 0.7, 0.7)
+  GameTooltip:AddLine("-- a cost, not a count of missed casts.", 0.7, 0.7, 0.7)
+  local learned, boot, src = ns.KickableCounts()
+  GameTooltip:AddLine(("%d proven in your logs, %d from %s."):format(
+    learned, boot, src or "the dungeon list"), 0.7, 0.7, 0.7)
   GameTooltip:AddLine("Which casts got through needs WoWCombatLog.txt.", 0.7, 0.7, 0.7)
 end
 
@@ -679,9 +682,13 @@ local function refreshMeter()
     -- rather than letting a blank column read as "nothing was kickable". A
     -- refused drill-down is ours to report; an empty spell list is the data
     -- file's, and only one of those is worth the player doing anything about.
+    local learned, boot = ns.KickableCounts()
     frame.footer:SetText(ns.Meter.secretGuidRefusals > 0
       and "|cffff9933kickable: the API will not name a player's spells (guid is secret)|r"
-      or "|cff808080kickable: no proven-interruptible spell hit anyone -- parse a log to learn more|r")
+      or (learned + boot) == 0
+      and "|cffff9933kickable: no interruptibility data -- run tools/gen-dungeon-interruptible.mjs|r"
+      or ("|cff808080kickable: none of the %d known interruptible casts hit anyone|r")
+         :format(learned + boot))
   else
     frame.footer:SetText("|cff808080kickable = dmg from proven-interruptible spells, not a cast count|r")
   end
