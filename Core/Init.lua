@@ -41,6 +41,19 @@ local DEFAULTS = {
   locked = false,
 }
 
+ns.DEFAULTS = DEFAULTS
+
+-- Back to a fresh install, in place: ns.db is held by reference in a dozen
+-- places, so swapping the table would leave every one of them writing to the
+-- old one. Nested defaults are rebuilt rather than shared, or two installs
+-- would end up pointing at the same sort table.
+function ns.ResetDB()
+  if not ns.db then return nil end
+  for k in pairs(ns.db) do ns.db[k] = nil end
+  ns.Deep(ns.db, DEFAULTS)
+  return ns.db
+end
+
 function ns.Deep(dst, src)
   for k, v in pairs(src) do
     if type(v) == "table" then

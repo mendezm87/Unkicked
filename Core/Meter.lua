@@ -1019,6 +1019,70 @@ function Meter:Restore()
   return true
 end
 
+-- ------------------------------------------------------------------- clearing
+-- A harvested pull is the one thing in this addon that cannot be got back by
+-- playing the game again: the session it came from is gone and the amounts were
+-- only readable for the moment we read them. So clearing is scoped, it says how
+-- much it actually threw away, and it never clears more than it was asked to.
+--   "saved"    every stored key; the key in progress is untouched
+--   <n>        one stored key, by its /uk history index
+--   "current"  the pulls harvested in the key in progress
+--   "all"      both
+-- Returns keys, pulls -- or nil, reason, so a caller can report what went
+-- rather than claiming success blindly.
+function Meter:Forget(scope)
+  local n = tonumber(scope)
+  local keys, pulls = 0, 0
+
+  if n then
+    local run = self.history[n]
+    if not run then return nil, ("no stored key %s"):format(tostring(scope)) end
+    pulls = #run.pulls
+    table.remove(self.history, n)
+    keys = 1
+  elseif scope == "saved" or scope == "all" then
+    keys = #self.history
+    for _, run in ipairs(self.history) do pulls = pulls + #run.pulls end
+    self.history = {}
+  elseif scope ~= "current" then
+    return nil, ("clear what? all, saved, current, or a number (%s)"):format(tostring(scope))
+  end
+
+  if scope == "current" or scope == "all" then
+    pulls = pulls + #self.pulls
+    self.pulls = {}
+    -- The baseline is what the next harvest subtracts from. Dropping the pulls
+    -- and keeping it would make the next pull a delta from numbers nobody can
+    -- see any more; with it gone, diffSnapshot takes the next snapshot whole.
+    self.baseline = nil
+    self.resumed = nil
+  end
+
+  -- Written through to the file in the same breath, not at logout: a clear that
+  -- only took effect on a clean exit would come back after a crash, and "I
+  -- cleared it and it is still there" is the worst possible answer.
+  self:Persist()
+  -- A discarded schema version was the reason the list was empty; once it has
+  -- been cleared deliberately, saying so is stale.
+  if keys > 0 then self.historyDropped = nil end
+  self:Reselect()
+  return keys, pulls
+end
+
+-- Whatever the panel was showing may be what just went. Falling back to the
+-- live segment is the same rule a stale stored selection already followed: a
+-- heading over an empty table is the one outcome worth engineering against.
+function Meter:Reselect()
+  local key = ns.db and ns.db.segment
+  if type(key) ~= "string" then return nil end
+  for _, seg in ipairs(self:Segments()) do
+    if seg.key == key then return key end
+  end
+  ns.db.segment = "current"
+  if ns.Panel and ns.Panel.Refresh then ns.Panel:Refresh() end
+  return "current"
+end
+
 local function ago(at)
   local nowSecs = epoch()
   if not at or at <= 0 or nowSecs <= 0 or nowSecs < at then return nil end

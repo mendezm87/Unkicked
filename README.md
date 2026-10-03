@@ -161,7 +161,35 @@ rather than at logout — so a crash or a disconnect keeps them too.
 
 A stored key lists its total; select it and its own pulls appear underneath,
 because five keys' worth of pulls is a menu taller than the screen. `/uk history`
-is the same list in chat, `/uk forget` empties it.
+is the same list in chat.
+
+### Clearing it
+
+A harvested pull cannot be got back by playing again — the session it came from
+is gone and its amounts were only readable for the moment we read them. So
+clearing is scoped, it reports how much it actually threw away, and the bare
+command clears nothing:
+
+| | |
+|---|---|
+| `/uk forget` | lists the scopes below and their sizes. Clears nothing. |
+| `/uk forget saved` | every stored key. The key in progress is untouched. |
+| `/uk forget <n>` | one stored key, by its `/uk history` number |
+| `/uk forget current` | the pulls harvested in the key in progress |
+| `/uk forget all` | both |
+| `/uk forget settings` | all of it **and** every setting — a fresh install |
+
+The dropdown offers the same thing without the typing: its last entries are
+*forget this stored key*, *clear N stored keys* and *clear N pulls in this key*,
+shown only when there is something there to take. Each needs two clicks — the
+first arms it and says so — because it sits in the same list as the harmless act
+of looking at a different segment.
+
+Two details that are the difference between clearing and corrupting: the file is
+rewritten in the same breath rather than at logout, so a clear survives a crash;
+and dropping the current key's pulls drops the baseline snapshot with them, so
+the next harvest is taken whole instead of being differenced against numbers
+that no longer exist.
 
 Four rules keep the stored copy honest, and each is a test:
 
@@ -352,7 +380,7 @@ prints exactly which parts of the old design the client still refuses.
 | `/uk sort <col> [asc\|desc]` | sort the panel — or just click the column heading |
 | `/uk pull <n>` | panel shows pull *n* |
 | `/uk history` | keys kept from earlier logins; `/uk history <n>` shows one |
-| `/uk forget` | throw away every stored key |
+| `/uk forget` | clear stored keys or harvested pulls — asks which, see above |
 | `/uk pulls` | toggle the one-line chat report after each pull |
 | `/uk` | toggle the panel |
 | `/uk clear` | drop the current list |

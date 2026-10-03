@@ -308,6 +308,9 @@ function Panel:Build()
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine("Inside a key only one segment is usually harvestable:", 0.6, 0.6, 0.6)
     GameTooltip:AddLine("the amounts stay secret until you leave the dungeon.", 0.6, 0.6, 0.6)
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("The list ends with the clear entries: a stored key, all of", 0.6, 0.6, 0.6)
+    GameTooltip:AddLine("them, or this key's pulls. Each asks twice. /uk forget too.", 0.6, 0.6, 0.6)
     GameTooltip:Show()
   end)
   frame.seg:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -407,6 +410,31 @@ local function segColor(kind)
   return "|cffb0b0b0"
 end
 
+-- The clear entries the list ends with. Only offered for data that actually
+-- exists: a menu row that throws away nothing reads as a broken button, and one
+-- that offers to clear a stored key while a live segment is selected would be
+-- ambiguous about which key it meant.
+local function clearActions()
+  local out = {}
+  if not ns.Meter then return out end
+  local runs = ns.Meter.history or {}
+  local sel = (ns.db and type(ns.db.segment) == "string" and ns.db.segment) or ""
+  local i = tonumber(sel:match("^saved:(%d+)"))
+  if i and runs[i] then
+    out[#out + 1] = { act = tostring(i),
+      label = ("forget this stored key (%d pulls)"):format(#runs[i].pulls) }
+  end
+  if #runs > 0 then
+    out[#out + 1] = { act = "saved", label = ("clear %d stored key%s")
+      :format(#runs, #runs == 1 and "" or "s") }
+  end
+  if #ns.Meter.pulls > 0 then
+    out[#out + 1] = { act = "current", label = ("clear %d pull%s in this key")
+      :format(#ns.Meter.pulls, #ns.Meter.pulls == 1 and "" or "s") }
+  end
+  return out
+end
+
 local function buildMenu()
   -- A file local, not a field on the frame: a stubbed frame answers any unknown
   -- key with a function, so `frame.menu` is never nil and the nil check would
@@ -438,7 +466,14 @@ function Panel:Menu(show)
   if not show then m:Hide(); return m end
 
   local segs = (ns.Meter and ns.Meter:Segments()) or {}
-  for i, seg in ipairs(segs) do
+  -- The list the dropdown draws is the segments plus the clear actions, so that
+  -- throwing a report away lives next to the report rather than only in a slash
+  -- command nobody reads the help for.
+  local entries = {}
+  for _, seg in ipairs(segs) do entries[#entries + 1] = seg end
+  for _, act in ipairs(clearActions()) do entries[#entries + 1] = act end
+
+  for i, e in ipairs(entries) do
     local b = m.items[i]
     if not b then
       b = CreateFrame("Button", nil, m)
@@ -449,22 +484,51 @@ function Panel:Menu(show)
       b.text:SetJustifyH("LEFT")
       b.text:SetWordWrap(false)
       b:SetScript("OnClick", function(self)
+        if self.act then
+          -- Two clicks, because this one cannot be undone and it sits in the
+          -- same list as the harmless act of looking at a different segment.
+          if not self.armed then
+            self.armed = true
+            self.text:SetText("|cffff6060   click again to confirm|r")
+            return
+          end
+          local keys, pulls = ns.Meter:Forget(self.act)
+          if keys then
+            ns.Print("discarded %d stored key(s) and %d pull(s)", keys, pulls)
+          end
+          Panel:Menu(false)
+          Panel:Refresh()
+          return
+        end
         if self.segKey then Panel:Segment(self.segKey) end
         Panel:Menu(false)
       end)
       m.items[i] = b
     end
-    b.segKey = seg.key
-    b.text:SetText(("%s%s%s|r"):format(
-      seg.key == ns.db.segment and "|cffffd200>|r " or "   ",
-      segColor(seg.kind), seg.label))
+    -- Rebuilt every time the list is opened, so an armed confirmation never
+    -- survives the menu being closed and reopened.
+    -- `false`, never nil: a stubbed frame answers an unknown key with a
+    -- function, so a nil field reads as truthy and both branches below would
+    -- fire on the wrong kind of entry.
+    b.armed = false
+    b.segKey = e.key or false
+    b.act = e.act or false
+    if e.act then
+      b.text:SetText(("|cffc06060   %s|r"):format(e.label))
+    else
+      b.text:SetText(("%s%s%s|r"):format(
+        e.key == ns.db.segment and "|cffffd200>|r " or "   ",
+        segColor(e.kind), e.label))
+    end
     b:Show()
   end
-  for i = #segs + 1, #m.items do
-    m.items[i].segKey = nil
+  for i = #entries + 1, #m.items do
+    m.items[i].segKey = false
+    m.items[i].act = false
+    m.items[i].armed = false
     m.items[i]:Hide()
   end
-  m:SetSize(MENU_W, 8 + ROW_H * math.max(#segs, 1))
+  m:SetSize(MENU_W, 8 + ROW_H * math.max(#entries, 1))
   m:Show()
   return m
 end

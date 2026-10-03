@@ -1525,9 +1525,89 @@ do
   ns.Meter:Persist()
   eq(#UnkickedDB.history.runs, 5, "and that is what reaches the file")
 
-  ok(pcall(SlashCmdList.UNKICKED, "forget"), "/uk forget throws the stored keys away")
-  eq(#ns.Meter.history, 0, "leaving none in memory")
-  eq(#UnkickedDB.history.runs, 0, "nor in the file")
+  -- ---------------------------------------------------------------- clearing
+  -- Stored pulls cannot be re-harvested, so the bare command must NOT clear:
+  -- it says what each scope would take and waits to be told which.
+  ok(pcall(SlashCmdList.UNKICKED, "forget"), "/uk forget on its own is a question")
+  eq(#ns.Meter.history, 5, "and throws nothing away")
+
+  -- One key, by its /uk history number.
+  local before = #ns.Meter.history
+  local keys, pulls = ns.Meter:Forget(2)
+  eq(keys, 1, "/uk forget <n> drops exactly one stored key")
+  eq(#ns.Meter.history, before - 1, "leaving the rest")
+  eq(ns.Meter.history[1].map, "Key 7", "and the newest is still the newest")
+  eq(select(1, ns.Meter:Forget(99)), nil, "a key that does not exist is refused")
+  eq(select(1, ns.Meter:Forget("nonsense")), nil, "and so is a scope we do not know")
+  eq(#ns.Meter.history, before - 1, "neither of which clears anything")
+
+  -- "saved" leaves the key in progress alone -- the single most likely mistake
+  -- is clearing the run you are standing in.
+  ns.Meter.run = { mapName = "In progress", level = 10, at = stub.wallclock }
+  ns.Meter.pulls = { { duration = 10, kicks = 3, deaths = 0, taken = 0,
+                       rows = { { name = "Kicker", kicks = 3, deaths = 0, taken = 0 } } } }
+  keys, pulls = ns.Meter:Forget("saved")
+  eq(#ns.Meter.history, 0, "/uk forget saved empties the stored keys")
+  eq(#ns.Meter.pulls, 1, "and does not touch the key in progress")
+  eq(#UnkickedDB.history.runs, 0, "the file is cleared in the same breath, not at logout")
+  ok(UnkickedDB.history.current ~= nil, "while the key in progress is still written")
+
+  -- "current" is the other half, and it has to drop the baseline with it or the
+  -- next harvest would be a delta from numbers nobody can see any more.
+  ns.Meter.baseline = { kicks = 99 }
+  keys, pulls = ns.Meter:Forget("current")
+  eq(pulls, 1, "/uk forget current drops the harvested pulls")
+  eq(#ns.Meter.pulls, 0, "leaving none in memory")
+  eq(ns.Meter.baseline, nil, "and clears the baseline, so the next pull is taken whole")
+  eq(UnkickedDB.history.current, nil, "a run with no pulls left is not written at all")
+
+  -- A selection pointing at what just went falls back rather than leaving a
+  -- heading over an empty table.
+  ns.Meter.history = { { map = "Gone", level = 7, at = stub.wallclock,
+                         pulls = { { duration = 5, kicks = 1, deaths = 0, taken = 0,
+                                     rows = { { name = "A", kicks = 1, deaths = 0, taken = 0 } } } } } }
+  ns.db.segment = "saved:1"
+  ns.Meter:Forget("saved")
+  eq(ns.db.segment, "current", "clearing the key you were looking at falls back to the live view")
+
+  -- The dropdown offers the same thing, and asks twice.
+  ns.Meter.history = { { map = "Clickable", level = 7, at = stub.wallclock,
+                         pulls = { { duration = 5, kicks = 1, deaths = 0, taken = 0,
+                                     rows = { { name = "A", kicks = 1, deaths = 0, taken = 0 } } } } } }
+  ns.Panel:Menu(true)
+  local clearBtn
+  for _, b in ipairs(ns.Panel.menuFrame.items) do
+    if b.act == "saved" then clearBtn = b end
+  end
+  ok(clearBtn ~= nil, "the dropdown ends with a clear entry for the stored keys")
+  clearBtn:Click()
+  eq(#ns.Meter.history, 1, "one click arms it rather than clearing")
+  ok(clearBtn.text:GetText():find("confirm", 1, true) ~= nil,
+    ("and says so (%q)"):format(clearBtn.text:GetText()))
+  clearBtn:Click()
+  eq(#ns.Meter.history, 0, "the second click clears")
+
+  -- Nothing to clear, no button to press.
+  ns.Meter.pulls = {}
+  ns.Panel:Menu(true)
+  local any
+  for _, b in ipairs(ns.Panel.menuFrame.items) do if b.act then any = true end end
+  eq(any, nil, "with nothing stored the clear entries are not offered at all")
+
+  -- The whole-install clear: history AND every setting.
+  ns.db.locked = true
+  ns.db.sort = { by = "taken", desc = false }
+  ns.Meter.history = { { map = "Gone too", level = 7, at = stub.wallclock,
+                         pulls = { { duration = 5, kicks = 1, deaths = 0, taken = 0,
+                                     rows = { { name = "A", kicks = 1, deaths = 0, taken = 0 } } } } } }
+  ok(pcall(SlashCmdList.UNKICKED, "forget settings"), "/uk forget settings runs")
+  eq(#ns.Meter.history, 0, "it takes the stored keys")
+  eq(ns.db.locked, false, "and puts every setting back to its default")
+  eq(ns.db.sort.by, "kicks", "including the sort")
+  ok(ns.db ~= ns.DEFAULTS, "without handing out the defaults table itself")
+  ok(ns.db.sort ~= ns.DEFAULTS.sort, "or sharing its nested tables")
+
+  ns.Meter.run, ns.Meter.pulls = nil, {}
   stub.challenge = { level = nil, mapID = nil, mapName = nil, deaths = 0 }
 end
 
