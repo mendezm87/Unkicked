@@ -348,7 +348,16 @@ C_DamageMeter = {
     return { totalAmount = 0, combatSpells = bag[guid] or {} }
   end,
 
-  ResetAllCombatSessions = function() end,
+  -- The real call empties the client's sessions, which is the whole reason it
+  -- is worth making: the panel's default segment reads them live. A no-op stub
+  -- would let a clear that changes nothing on screen pass as working.
+  ResetAllCombatSessions = function()
+    stub.meter.players.current = {}
+    stub.meter.players.overall = {}
+    stub.meter.duration.current = 0
+    stub.meter.duration.overall = 0
+    stub.meter.resets = (stub.meter.resets or 0) + 1
+  end,
 }
 
 stub.challenge = { level = nil, mapID = nil, mapName = nil, deaths = 0, active = nil }

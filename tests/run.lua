@@ -1570,16 +1570,19 @@ do
   ns.Meter:Forget("saved")
   eq(ns.db.segment, "current", "clearing the key you were looking at falls back to the live view")
 
-  -- The dropdown offers the same thing, and asks twice.
+  -- The panel's own clear box, which is where clearing lives now.
+  local function clearItem(act)
+    ns.Panel:Clear(true)
+    for _, b in ipairs(ns.Panel.clearFrame.items) do
+      if b.act == act and b:IsShown() then return b end
+    end
+  end
+
   ns.Meter.history = { { map = "Clickable", level = 7, at = stub.wallclock,
                          pulls = { { duration = 5, kicks = 1, deaths = 0, taken = 0,
                                      rows = { { name = "A", kicks = 1, deaths = 0, taken = 0 } } } } } }
-  ns.Panel:Menu(true)
-  local clearBtn
-  for _, b in ipairs(ns.Panel.menuFrame.items) do
-    if b.act == "saved" then clearBtn = b end
-  end
-  ok(clearBtn ~= nil, "the dropdown ends with a clear entry for the stored keys")
+  local clearBtn = clearItem("saved")
+  ok(clearBtn ~= nil, "the clear box offers a scope for the stored keys")
   clearBtn:Click()
   eq(#ns.Meter.history, 1, "one click arms it rather than clearing")
   ok(clearBtn.text:GetText():find("confirm", 1, true) ~= nil,
@@ -1587,12 +1590,67 @@ do
   clearBtn:Click()
   eq(#ns.Meter.history, 0, "the second click clears")
 
-  -- Nothing to clear, no button to press.
-  ns.Meter.pulls = {}
+  -- The defect that made clearing undiscoverable: with nothing stored the old
+  -- entries vanished entirely, so the panel offered no way to clear at all.
+  -- Every scope is listed now; the empty ones simply refuse to arm.
+  ns.Meter.pulls, ns.Meter.history = {}, {}
+  local empty = clearItem("saved")
+  ok(empty ~= nil, "with nothing stored the scope is still listed, not hidden")
+  ok(empty.note:GetText():find("nothing to clear", 1, true) ~= nil,
+    "and says there is nothing to take")
+  empty:Click()
+  eq(empty.armed, false, "clicking an empty scope does not arm a confirmation")
+
+  -- Opening the clear box closes the segment list, so the two dialogs that
+  -- share that corner can never be stacked on top of each other.
   ns.Panel:Menu(true)
-  local any
-  for _, b in ipairs(ns.Panel.menuFrame.items) do if b.act then any = true end end
-  eq(any, nil, "with nothing stored the clear entries are not offered at all")
+  ns.Panel:Clear(true)
+  eq(ns.Panel.menuFrame:IsShown(), false, "opening the clear box closes the segment list")
+  ns.Panel:Clear(false)
+
+  -- The clear entries are gone from the segment list: an irreversible row used
+  -- to sit one pixel from the harmless act of looking at another pull.
+  ns.Meter.history = { { map = "Clickable", level = 7, at = stub.wallclock,
+                         pulls = { { duration = 5, kicks = 1, deaths = 0, taken = 0,
+                                     rows = { { name = "A", kicks = 1, deaths = 0, taken = 0 } } } } } }
+  ns.Panel:Menu(true)
+  local shown = 0
+  for _, b in ipairs(ns.Panel.menuFrame.items) do
+    if b:IsShown() then shown = shown + 1 end
+  end
+  eq(shown, #ns.Meter:Segments(),
+    "the segment dropdown draws segments and nothing else -- no clear entries")
+  ns.Panel:Menu(false)
+  ns.Meter.history = {}
+
+  -- THE BUG: clearing reported success while the same rows stayed on screen.
+  -- The panel's default segment is not ours -- it is the client's Current
+  -- session, read live -- so dropping our pulls never emptied it.
+  stub.meter.players.current = {
+    { name = "Yoyiek", kicks = 26, deaths = 0, taken = 45200000 },
+    { name = "Tun", kicks = 19, deaths = 0, taken = 38400000 },
+  }
+  stub.meter.resets = 0
+  ns.db.segment = "current"
+  local before = ns.Meter:Rows("current")
+  eq(#before, 2, "the live segment shows the client's rows")
+  ns.Meter:Forget("current")
+  eq(#ns.Meter:Rows("current"), 2,
+    "clearing our pulls alone leaves the live rows -- which is what looked broken")
+  local okLive, pullsLive, live = ns.Meter:Forget("live")
+  eq(live, true, "the live scope resets the client's sessions")
+  eq(stub.meter.resets, 1, "by calling ResetAllCombatSessions exactly once")
+  eq(ns.Meter:Rows("current"), nil, "and now the panel's default segment is empty")
+  eq(ns.Meter.baseline, nil, "the baseline goes with it, so the next pull is taken whole")
+
+  -- Clicking it in the box does the same, and says the live meter went too.
+  stub.meter.players.current = { { name = "Yoyiek", kicks = 4, deaths = 0, taken = 10 } }
+  stub.meter.resets = 0
+  local liveBtn = clearItem("live")
+  ok(liveBtn ~= nil, "the box offers the live meter as its own scope")
+  liveBtn:Click(); liveBtn:Click()
+  eq(stub.meter.resets, 1, "two clicks reset it")
+  eq(ns.Meter:Rows("current"), nil, "and the rows are gone")
 
   -- The whole-install clear: history AND every setting.
   ns.db.locked = true

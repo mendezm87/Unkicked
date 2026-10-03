@@ -172,18 +172,37 @@ command clears nothing:
 
 | | |
 |---|---|
+**The `clear` button in the panel's title bar is the way to do this.** It is
+always there, it always opens, and it lists every scope with what that scope
+would actually take. A scope with nothing in it is listed greyed and reading
+*nothing to clear* rather than being hidden — the previous version hid them, so
+on a fresh install the panel offered no way to clear at all. Each scope needs
+**two clicks**: the first arms it and turns the row red.
+
+The same scopes are typable, and both go through one code path so they cannot
+mean different things:
+
+| | |
+|---|---|
 | `/uk forget` | lists the scopes below and their sizes. Clears nothing. |
+| `/uk forget current` | the pulls harvested in the key in progress |
 | `/uk forget saved` | every stored key. The key in progress is untouched. |
 | `/uk forget <n>` | one stored key, by its `/uk history` number |
-| `/uk forget current` | the pulls harvested in the key in progress |
-| `/uk forget all` | both |
+| `/uk forget live` | the **game's** live meter — see below |
+| `/uk forget all` | all three |
 | `/uk forget settings` | all of it **and** every setting — a fresh install |
 
-The dropdown offers the same thing without the typing: its last entries are
-*forget this stored key*, *clear N stored keys* and *clear N pulls in this key*,
-shown only when there is something there to take. Each needs two clicks — the
-first arms it and says so — because it sits in the same list as the harmless act
-of looking at a different segment.
+**`live` is the one that empties what you are looking at.** The panel's default
+segment is not ours: it is `C_DamageMeter`'s Current session, read live at every
+refresh. Clearing our harvested pulls never touched it, which is why clearing
+used to report success while the same rows stayed on screen. The only thing that
+empties it is `ResetAllCombatSessions`, which is the *client's* meter — so it
+clears Blizzard's own window, and any other meter reading the same sessions,
+too. That is why it is its own scope and says so where it is offered, rather
+than being a quiet side effect of clearing ours.
+
+The clear actions are no longer in the segment dropdown. An irreversible row sat
+one pixel from the harmless act of looking at a different pull.
 
 Two details that are the difference between clearing and corrupting: the file is
 rewritten in the same breath rather than at logout, so a clear survives a crash;

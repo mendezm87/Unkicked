@@ -38,7 +38,7 @@ local C1_W = WIDTH - 16 - (C2_W + C3_W + C4_W + C5_W + GAP * 4)
 local HEAD_Y = 22
 local ROWS_Y = HEAD_Y + ROW_H
 
-local frame, rows, menu
+local frame, rows, menu, clearBox
 
 local function namesOf(list, limit)
   local out = {}
@@ -283,6 +283,32 @@ function Panel:Build()
   frame.title:SetPoint("TOPLEFT", 8, -6)
   frame.title:SetText("Unkicked")
 
+  -- Clearing used to live only at the bottom of the segment dropdown, and only
+  -- when there was something to take -- so on the common case of an empty
+  -- history there was nothing on screen to find, and the honest answer to "how
+  -- do I clear this" was a slash command. It is a button now: always visible,
+  -- always opens, and the scopes that would take nothing are listed greyed
+  -- rather than omitted.
+  frame.clear = CreateFrame("Button", nil, frame)
+  frame.clear:SetPoint("TOPLEFT", 62, -5)
+  frame.clear:SetSize(40, ROW_H)
+  frame.clear.text = frame.clear:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  frame.clear.text:SetPoint("LEFT")
+  frame.clear.text:SetText("clear")
+  frame.clear:SetScript("OnClick", function() Panel:Clear() end)
+  frame.clear:SetScript("OnEnter", function(self)
+    self.text:SetTextColor(1, 0.5, 0.5)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine("Clear", 1, 1, 1)
+    GameTooltip:AddLine("Throw away harvested pulls, stored keys, or the", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine("game's live meter. Each asks twice before taking.", 0.7, 0.7, 0.7)
+    GameTooltip:Show()
+  end)
+  frame.clear:SetScript("OnLeave", function(self)
+    self.text:SetTextColor(0.5, 0.5, 0.5)
+    GameTooltip:Hide()
+  end)
+
   -- The segment toggle. Blizzard ships Enum.DamageMeterSessionType, so current
   -- vs overall is a native idea here and not something we have to accumulate --
   -- but the overall WE show is the keystone window, summed from the pulls, so it
@@ -309,8 +335,8 @@ function Panel:Build()
     GameTooltip:AddLine("Inside a key only one segment is usually harvestable:", 0.6, 0.6, 0.6)
     GameTooltip:AddLine("the amounts stay secret until you leave the dungeon.", 0.6, 0.6, 0.6)
     GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("The list ends with the clear entries: a stored key, all of", 0.6, 0.6, 0.6)
-    GameTooltip:AddLine("them, or this key's pulls. Each asks twice. /uk forget too.", 0.6, 0.6, 0.6)
+    GameTooltip:AddLine("To throw a report away, use the panel's clear button --", 0.6, 0.6, 0.6)
+    GameTooltip:AddLine("it is not in this list, so a mis-click cannot take one.", 0.6, 0.6, 0.6)
     GameTooltip:Show()
   end)
   frame.seg:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -410,31 +436,6 @@ local function segColor(kind)
   return "|cffb0b0b0"
 end
 
--- The clear entries the list ends with. Only offered for data that actually
--- exists: a menu row that throws away nothing reads as a broken button, and one
--- that offers to clear a stored key while a live segment is selected would be
--- ambiguous about which key it meant.
-local function clearActions()
-  local out = {}
-  if not ns.Meter then return out end
-  local runs = ns.Meter.history or {}
-  local sel = (ns.db and type(ns.db.segment) == "string" and ns.db.segment) or ""
-  local i = tonumber(sel:match("^saved:(%d+)"))
-  if i and runs[i] then
-    out[#out + 1] = { act = tostring(i),
-      label = ("forget this stored key (%d pulls)"):format(#runs[i].pulls) }
-  end
-  if #runs > 0 then
-    out[#out + 1] = { act = "saved", label = ("clear %d stored key%s")
-      :format(#runs, #runs == 1 and "" or "s") }
-  end
-  if #ns.Meter.pulls > 0 then
-    out[#out + 1] = { act = "current", label = ("clear %d pull%s in this key")
-      :format(#ns.Meter.pulls, #ns.Meter.pulls == 1 and "" or "s") }
-  end
-  return out
-end
-
 local function buildMenu()
   -- A file local, not a field on the frame: a stubbed frame answers any unknown
   -- key with a function, so `frame.menu` is never nil and the nil check would
@@ -466,12 +467,12 @@ function Panel:Menu(show)
   if not show then m:Hide(); return m end
 
   local segs = (ns.Meter and ns.Meter:Segments()) or {}
-  -- The list the dropdown draws is the segments plus the clear actions, so that
-  -- throwing a report away lives next to the report rather than only in a slash
-  -- command nobody reads the help for.
+  -- Segments only. The clear actions used to be appended here, which both hid
+  -- them (they appeared only when there was something to take) and put an
+  -- irreversible row one pixel from the harmless act of looking at another
+  -- pull. They live behind the panel's own Clear button now.
   local entries = {}
   for _, seg in ipairs(segs) do entries[#entries + 1] = seg end
-  for _, act in ipairs(clearActions()) do entries[#entries + 1] = act end
 
   for i, e in ipairs(entries) do
     local b = m.items[i]
@@ -484,53 +485,134 @@ function Panel:Menu(show)
       b.text:SetJustifyH("LEFT")
       b.text:SetWordWrap(false)
       b:SetScript("OnClick", function(self)
-        if self.act then
-          -- Two clicks, because this one cannot be undone and it sits in the
-          -- same list as the harmless act of looking at a different segment.
-          if not self.armed then
-            self.armed = true
-            self.text:SetText("|cffff6060   click again to confirm|r")
-            return
-          end
-          local keys, pulls = ns.Meter:Forget(self.act)
-          if keys then
-            ns.Print("discarded %d stored key(s) and %d pull(s)", keys, pulls)
-          end
-          Panel:Menu(false)
-          Panel:Refresh()
-          return
-        end
         if self.segKey then Panel:Segment(self.segKey) end
         Panel:Menu(false)
       end)
       m.items[i] = b
     end
-    -- Rebuilt every time the list is opened, so an armed confirmation never
-    -- survives the menu being closed and reopened.
     -- `false`, never nil: a stubbed frame answers an unknown key with a
-    -- function, so a nil field reads as truthy and both branches below would
-    -- fire on the wrong kind of entry.
-    b.armed = false
+    -- function, so a nil field reads as truthy.
     b.segKey = e.key or false
-    b.act = e.act or false
-    if e.act then
-      b.text:SetText(("|cffc06060   %s|r"):format(e.label))
-    else
-      b.text:SetText(("%s%s%s|r"):format(
-        e.key == ns.db.segment and "|cffffd200>|r " or "   ",
-        segColor(e.kind), e.label))
-    end
+    b.text:SetText(("%s%s%s|r"):format(
+      e.key == ns.db.segment and "|cffffd200>|r " or "   ",
+      segColor(e.kind), e.label))
     b:Show()
   end
   for i = #entries + 1, #m.items do
     m.items[i].segKey = false
-    m.items[i].act = false
-    m.items[i].armed = false
     m.items[i]:Hide()
   end
   m:SetSize(MENU_W, 8 + ROW_H * math.max(#entries, 1))
   m:Show()
   return m
+end
+
+-- ------------------------------------------------------------ the clear box
+-- A dialog of its own rather than rows in the segment list, for three reasons
+-- the last version got wrong:
+--
+--   it is REACHABLE. The old entries appeared only when there was something to
+--   take, so with no stored keys the panel offered no way to clear at all and
+--   the honest answer was a slash command.
+--   it says what each scope COSTS, next to the button that does it, instead of
+--   only in the help text of a command.
+--   it is not adjacent to a harmless click. Selecting a different pull and
+--   destroying one were one pixel apart.
+local CLEAR_W = 268
+
+function Panel:ClearBox()
+  if clearBox then return clearBox end
+  local c = CreateFrame("Frame", "UnkickedClearBox", frame, "BackdropTemplate")
+  c:SetPoint("TOPLEFT", frame.clear, "BOTTOMLEFT", -4, -2)
+  c:SetFrameStrata("DIALOG")
+  c:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  c:SetBackdropColor(0, 0, 0, 0.95)
+  c:SetBackdropBorderColor(0.6, 0.25, 0.25, 1)
+  c:EnableMouse(true)
+  c.items = {}
+
+  c.head = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  c.head:SetPoint("TOPLEFT", 6, -6)
+  c.head:SetText("Clear what?")
+
+  c.foot = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  c.foot:SetPoint("BOTTOMLEFT", 6, 6)
+  c.foot:SetPoint("BOTTOMRIGHT", -6, 6)
+  c.foot:SetJustifyH("LEFT")
+  c.foot:SetText("A pull cannot be re-harvested: its session is gone.")
+
+  c:Hide()
+  clearBox = c
+  Panel.clearFrame = c
+  return c
+end
+
+-- show == nil toggles. Rebuilt on every open so the counts are current and no
+-- armed confirmation survives a close.
+function Panel:Clear(show)
+  self:Build()
+  local c = self:ClearBox()
+  if show == nil then show = not c:IsShown() end
+  if not show then c:Hide(); return c end
+  -- Never both open: the box is anchored under a button the segment list
+  -- overlaps, and two stacked dialogs is how you click the wrong one.
+  self:Menu(false)
+
+  local scopes = (ns.Meter and ns.Meter:ClearScopes()) or {}
+  local ROW = ROW_H + 10
+  for i, sc in ipairs(scopes) do
+    local b = c.items[i]
+    if not b then
+      b = CreateFrame("Button", nil, c)
+      b:SetSize(CLEAR_W - 12, ROW)
+      b:SetPoint("TOPLEFT", 6, -(6 + ROW_H + (i - 1) * ROW))
+      b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      b.text:SetPoint("TOPLEFT")
+      b.text:SetJustifyH("LEFT")
+      b.text:SetWordWrap(false)
+      b.note = b:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+      b.note:SetPoint("TOPLEFT", 10, -ROW_H + 4)
+      b.note:SetJustifyH("LEFT")
+      b.note:SetWordWrap(false)
+      b:SetScript("OnClick", function(self)
+        -- Nothing to take, so nothing to confirm. Arming an empty scope would
+        -- teach the confirmation is noise.
+        if not self.act or self.empty then return end
+        if not self.armed then
+          self.armed = true
+          self.text:SetText(("|cffff4040%s -- click again to confirm|r"):format(self.label))
+          return
+        end
+        local ok, msg = ns.Meter:ClearBy(self.act)
+        ns.Print("%s", msg)
+        Panel:Clear(false)
+        Panel:Refresh()
+      end)
+      c.items[i] = b
+    end
+    -- `false`, never nil: a stubbed frame answers an unknown key with a
+    -- function, so a nil field reads as truthy.
+    b.armed = false
+    b.act = sc.act or false
+    b.label = sc.label or ""
+    b.empty = (sc.count or 0) == 0
+    b.text:SetText(("%s%s|r"):format(b.empty and "|cff707070" or "|cffe08080", sc.label))
+    b.note:SetText(("|cff606060%s|r")
+      :format(b.empty and "nothing to clear" or (sc.note or "")))
+    b:Show()
+  end
+  for i = #scopes + 1, #c.items do
+    c.items[i].act = false
+    c.items[i].armed = false
+    c.items[i]:Hide()
+  end
+  c:SetSize(CLEAR_W, 6 + ROW_H + ROW * math.max(#scopes, 1) + ROW_H + 6)
+  c:Show()
+  return c
 end
 
 -- `which` is a segment key: "current", "overall", "pull:<n>" or "session:<id>".

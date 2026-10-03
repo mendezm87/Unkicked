@@ -21,7 +21,8 @@ local function usage()
   print("  /uk pull <n>   panel shows pull n (see /uk segments)")
   print("  /uk segments   list every segment the panel can show")
   print("  /uk history    keys kept from earlier logins; /uk history <n> shows one")
-  print("  /uk forget     clear stored keys or harvested pulls (asks what)")
+  print("  /uk forget     clear stored keys, harvested pulls or the live meter")
+  print("  |cff808080               -- or just use the panel's clear button|r")
   print("  /uk sort <col> [asc|desc]  sort the panel; or click a column heading")
   print("  /uk pulls      toggle the one-line chat report after each pull")
   print("  /uk log        is the client writing WoWCombatLog.txt right now?")
@@ -119,41 +120,24 @@ SlashCmdList.UNKICKED = function(msg)
     -- what it would throw away and makes you name the scope. That is a
     -- confirmation, not an obstruction: every scope below clears on the spot.
     local what = tostring(arg):match("^(%S*)")
-    local runs = ns.Meter.history or {}
-    local saved = 0
-    for _, run in ipairs(runs) do saved = saved + #run.pulls end
     local n = tonumber(what)
 
     if what == "" then
-      ns.Print("clear what? nothing has been cleared yet.")
-      print(("  |cffffd200/uk forget saved|r     %d stored key(s), %d pull(s) -- this key untouched")
-        :format(#runs, saved))
-      print(("  |cffffd200/uk forget current|r   the %d pull(s) harvested in the key in progress")
-        :format(#ns.Meter.pulls))
-      print(("  |cffffd200/uk forget all|r       both -- %d pull(s) in total"):format(saved + #ns.Meter.pulls))
-      print("  |cffffd200/uk forget <n>|r       one stored key -- |cffffd200/uk history|r for the numbers")
-      print("  |cffffd200/uk forget settings|r  everything, including the panel's "
-        .. "position and sort -- a fresh install")
+      -- The scopes and their costs come from Meter:ClearScopes, the same list
+      -- the panel's clear box draws, so the two can never describe the same
+      -- scope differently.
+      ns.Print("clear what? nothing has been cleared yet. The panel's "
+        .. "|cffffd200clear|r button offers the same list.")
+      for _, sc in ipairs(ns.Meter:ClearScopes()) do
+        print(("  |cffffd200/uk forget %s|r%s %s  |cff808080%s|r"):format(
+          sc.act, (" "):rep(math.max(1, 9 - #sc.act)), sc.label, sc.note or ""))
+      end
+      print("  |cffffd200/uk forget <n>|r  one stored key -- |cffffd200/uk history|r for the numbers")
       print("  |cff808080Pulls cannot be re-harvested: the session they came from is gone.|r")
 
-    elseif what == "settings" or what == "everything" then
-      local keys, pulls = ns.Meter:Forget("all")
-      ns.ResetDB()
-      ns.Panel:Reset()
-      ns.Panel:Refresh()
-      ns.Print("discarded %d stored key(s) and %d pull(s), and put every setting "
-        .. "back to a fresh install", keys or 0, pulls or 0)
-
     else
-      local keys, pulls = ns.Meter:Forget(n or what)
-      if not keys then
-        ns.Print("%s", tostring(pulls))
-      else
-        ns.Print("discarded %d stored key(s) and %d pull(s)%s", keys, pulls,
-          (what == "saved" and " -- the key in progress is untouched")
-          or (what == "current" and " -- stored keys are untouched") or "")
-        if ns.Panel then ns.Panel:Refresh() end
-      end
+      local ok, msg = ns.Meter:ClearBy(n or what)
+      ns.Print("%s", msg)
     end
 
   elseif cmd == "sort" then

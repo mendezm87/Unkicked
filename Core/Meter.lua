@@ -1027,12 +1027,24 @@ end
 --   "saved"    every stored key; the key in progress is untouched
 --   <n>        one stored key, by its /uk history index
 --   "current"  the pulls harvested in the key in progress
---   "all"      both
--- Returns keys, pulls -- or nil, reason, so a caller can report what went
+--   "live"     the game's own combat sessions -- see below
+--   "all"      all three
+--
+-- "live" is the one that was missing, and its absence is why clearing LOOKED
+-- like it did nothing: the panel's default segment is not ours at all, it is
+-- C_DamageMeter's Current session, read live at every refresh. Dropping our
+-- harvested pulls never touched it, so the same rows were still on screen a
+-- moment after we reported throwing them away. The only thing that empties it
+-- is ResetAllCombatSessions -- which is the CLIENT's meter, so it clears
+-- Blizzard's own window and any other meter reading the same sessions too.
+-- That is worth saying out loud wherever it is offered rather than doing it
+-- quietly, so it is its own scope instead of a hidden side effect of "current".
+--
+-- Returns keys, pulls, live -- or nil, reason, so a caller can report what went
 -- rather than claiming success blindly.
 function Meter:Forget(scope)
   local n = tonumber(scope)
-  local keys, pulls = 0, 0
+  local keys, pulls, live = 0, 0, false
 
   if n then
     local run = self.history[n]
@@ -1044,8 +1056,13 @@ function Meter:Forget(scope)
     keys = #self.history
     for _, run in ipairs(self.history) do pulls = pulls + #run.pulls end
     self.history = {}
-  elseif scope ~= "current" then
-    return nil, ("clear what? all, saved, current, or a number (%s)"):format(tostring(scope))
+  elseif scope ~= "current" and scope ~= "live" then
+    return nil, ("clear what? all, saved, current, live, or a number (%s)")
+      :format(tostring(scope))
+  end
+
+  if scope == "live" or scope == "all" then
+    live = self:ResetLive()
   end
 
   if scope == "current" or scope == "all" then
@@ -1066,7 +1083,87 @@ function Meter:Forget(scope)
   -- been cleared deliberately, saying so is stale.
   if keys > 0 then self.historyDropped = nil end
   self:Reselect()
-  return keys, pulls
+  -- Unconditionally, not only when Reselect moved the selection: the commonest
+  -- clear of all leaves the selection exactly where it was and changes only
+  -- what is under it, and that is precisely the case that looked broken.
+  if ns.Panel and ns.Panel.Refresh then ns.Panel:Refresh() end
+  return keys, pulls, live
+end
+
+-- Empty the CLIENT's combat sessions. Separated from Forget so the one call
+-- that reaches outside this addon is in one place and can be read on its own.
+-- Returns true only if the client actually accepted it.
+function Meter:ResetLive()
+  local C = C_DamageMeter
+  if not C or not C.ResetAllCombatSessions then return false end
+  if not pcall(C.ResetAllCombatSessions) then return false end
+  -- The baseline is what the next harvest subtracts from, and it describes
+  -- numbers that no longer exist. diffSnapshot's backwards-check would cope,
+  -- but only by inference; dropping it states the fact.
+  self.baseline = nil
+  self.resumed = nil
+  return true
+end
+
+-- Every clear that can be asked for, each with what it would ACTUALLY take.
+-- One list, read by the panel's Clear dialog, by /uk forget's help and by the
+-- tests, so the dialog cannot offer a scope the command does not have or
+-- describe it as costing something different.
+--
+-- `count` is how much this scope would throw away. Zero means the entry is
+-- shown but not armable: a button that discards nothing reads as broken, and
+-- hiding it entirely is what made clearing undiscoverable in the first place.
+function Meter:ClearScopes()
+  local runs = self.history or {}
+  local savedPulls = 0
+  for _, run in ipairs(runs) do savedPulls = savedPulls + #run.pulls end
+  local mine = #self.pulls
+  local liveOn = self:Available() and 1 or 0
+
+  local function plural(n, word)
+    return ("%d %s%s"):format(n, word, n == 1 and "" or "s")
+  end
+
+  return {
+    { act = "current", count = mine,
+      label = ("this key: %s"):format(plural(mine, "pull")),
+      note = "harvested this session -- stored keys untouched" },
+    { act = "saved", count = #runs,
+      label = ("stored keys: %s, %s"):format(plural(#runs, "key"), plural(savedPulls, "pull")),
+      note = "keys kept from earlier logins -- this key untouched" },
+    -- The scope that was missing, and the only one that empties what the panel
+    -- shows by default. It reaches outside this addon, so it says so here
+    -- rather than in a changelog.
+    { act = "live", count = liveOn,
+      label = "the game's live meter",
+      note = "resets Blizzard's own meter too, and any other reading it" },
+    { act = "all", count = mine + #runs + liveOn,
+      label = "all three", note = "our pulls, the stored keys and the live meter" },
+    { act = "settings", count = 1,
+      label = "everything, and every setting",
+      note = "window position, sort, thresholds -- back to a fresh install" },
+  }
+end
+
+-- The one entry point both the dialog and the slash command go through, so
+-- "settings" cannot mean one thing when typed and another when clicked.
+-- Returns ok, message.
+function Meter:ClearBy(act)
+  if act == "settings" or act == "everything" then
+    local keys, pulls = self:Forget("all")
+    if ns.ResetDB then ns.ResetDB() end
+    if ns.Panel and ns.Panel.Reset then ns.Panel:Reset() end
+    if ns.Panel and ns.Panel.Refresh then ns.Panel:Refresh() end
+    return true, ("discarded %d stored key(s) and %d pull(s), and put every "
+      .. "setting back to a fresh install"):format(keys or 0, pulls or 0)
+  end
+  local keys, pulls, live = self:Forget(act)
+  if not keys then return false, tostring(pulls) end
+  local tail = (act == "saved" and " -- the key in progress is untouched")
+    or (act == "current" and " -- stored keys are untouched") or ""
+  if live then tail = tail .. " and reset the game's live meter" end
+  return true, ("discarded %d stored key(s) and %d pull(s)%s")
+    :format(keys, pulls, tail)
 end
 
 -- Whatever the panel was showing may be what just went. Falling back to the
