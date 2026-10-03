@@ -201,6 +201,28 @@ page is not the client; when it finds none the mode is greyed with the reason an
 refuses to select, and `/uk audit` prints the field names a real damage row
 actually carries so the next run settles it.
 
+### The audit takes itself
+
+The audit is the one thing a combat log can never contain: the field names
+`C_DamageMeter` returns on *your* client. It used to be a command you had to
+remember to type before logging out — and the logout destroys the live sessions it
+reads, so forgetting it did not delay the answer, it lost it.
+
+It is now taken automatically at **two** moments, and the pair is the point:
+
+- when the key completes, while the party is still on the restricted map, and
+- when the restriction lifts, where the same fields may come back readable.
+
+One audit cannot tell those regimes apart. Both are kept in `UnkickedDB` (four
+entries, newest first) under the same rules as a harvested pull: nothing secret is
+ever written — a secret guid is recorded as the *text* `guid=<secret>`, which is the
+diagnosis — and an audit written by a schema this build does not know is discarded
+whole rather than half-read.
+
+The **`audit`** button in the panel's title bar opens it in a selectable box, because
+a screenshot of the chat frame cuts off the ends of exactly the lines that matter.
+`/uk audit off` stops the automatic capture.
+
 **How many casts went unkicked is still the parser's answer.** The panel can only
 report what landed; which casts got through needs `WoWCombatLog.txt`.
 
@@ -447,6 +469,10 @@ prints exactly which parts of the old design the client still refuses.
 | `/uk history` | keys kept from earlier logins; `/uk history <n>` shows one |
 | `/uk forget` | clear stored keys or harvested pulls — asks which, see above |
 | `/uk audit` | dump the raw metric rows, and whether a spell row carries a cast count |
+| `/uk audit last` | print the audit that was taken by itself at the end of the last key |
+| `/uk audit copy` | open the copy box — same as the panel's **audit** button |
+| `/uk audit on` / `off` | take one automatically at the end of a key, or stop |
+| `/uk audit forget` | discard the stored audits |
 | `/uk pulls` | toggle the one-line chat report after each pull |
 | `/uk` | toggle the panel |
 | `/uk clear` | drop the current list |

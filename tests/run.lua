@@ -1756,6 +1756,157 @@ end
 -- parser/host.lua defines the same client globals this file stubs, so the offline
 -- suite runs in its own process rather than fighting over them. Same interpreter,
 -- so `luajit tests/run.lua` covers everything.
+-- R-41: the audit is taken WITHOUT being asked for, because the hand-typed
+-- version was forgotten every time and the logout that follows a key destroys
+-- the sessions it reads. The field names C_DamageMeter returns on a given
+-- client are the one thing no combat log can ever contain, so a forgotten audit
+-- is not a delayed answer -- it is a lost one.
+print("\n[meter] the audit takes itself at the end of a key, and survives the logout")
+do
+  local function relog(keepDB)
+    loadAddon(keepDB)
+    assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+    assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
+    stub.fire("PLAYER_LOGIN")
+    return stub.frames["UnkickedPanel"]
+  end
+
+  local function harvested(kicks, taken, deaths, duration)
+    stub.setMeter("current", {
+      { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k",
+        kicks = kicks, taken = taken, deaths = deaths },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.meter.secretGuids = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 11, mapID = 501, mapName = "Voidscar Arena", deaths = 0 }
+  local f = relog(false)
+
+  -- Inside the key, on the restricted map.
+  stub.restricted = true
+  stub.fire("CHALLENGE_MODE_START")
+  harvested(6, 400, 0, 120)
+  eq(#ns.Meter:StoredAudits(), 0, "nothing is audited mid-key -- the key end is the moment")
+
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  local stored = ns.Meter:StoredAudits()
+  eq(#stored, 1, "completing the key takes an audit with nobody typing anything")
+  eq(stored[1].reason, "key completed", "stamped with why it was taken")
+  eq(stored[1].restricted, true, "and with the regime it was taken in -- still on the map")
+  eq(stored[1].map, "Voidscar Arena", "named after the key it belongs to")
+  eq(stored[1].level, 11, "with its level")
+  ok(#stored[1].lines > 4, ("and the lines themselves (%d)"):format(#stored[1].lines))
+
+  -- The second capture is the finding, not a duplicate: the same fields may come
+  -- back plain once the restriction lifts, and one audit cannot show that.
+  stub.restricted = false
+  stub.fire("ADDON_RESTRICTION_STATE_CHANGED")
+  stored = ns.Meter:StoredAudits()
+  eq(#stored, 2, "leaving the restricted map takes a second one")
+  eq(stored[1].reason, "restrictions lifted", "newest first")
+  eq(stored[1].restricted, false, "in the other regime, which is the whole point of two")
+
+  stub.fire("ADDON_RESTRICTION_STATE_CHANGED")
+  stub.fire("ADDON_RESTRICTION_STATE_CHANGED")
+  eq(#ns.Meter:StoredAudits(), 2, "one per reason per key, not one per restriction edge")
+
+  -- Rule 1 at the file boundary, swept the same way the stored pulls are: a
+  -- secret serialised into a line would come back next login as an ordinary
+  -- string, indistinguishable from something measured.
+  local bad = {}
+  local function walk(t, path)
+    for k, v in pairs(t) do
+      local at = path .. "." .. tostring(k)
+      if issecretvalue(v) then bad[#bad + 1] = at .. " (secret)"
+      elseif type(v) == "table" then walk(v, at)
+      elseif type(v) ~= "number" and type(v) ~= "string" and type(v) ~= "boolean" then
+        bad[#bad + 1] = ("%s (%s)"):format(at, type(v))
+      end
+    end
+  end
+  walk(UnkickedDB.audit, "audit")
+  eq(#bad, 0, "every stored audit value is plain  " .. table.concat(bad, ", "))
+
+  -- And in the regime that caused all of this: a secret guid with a plain name
+  -- beside it. The audit must still be takeable, and must say <secret> as TEXT
+  -- rather than carrying the secret itself into the file.
+  stub.meter.secretGuids = true
+  stub.meter.secretNames = false
+  local entry = ns.Meter:AuditCapture("asked for")
+  ok(entry ~= nil, "an audit is still takeable when the guids are secret")
+  local text = ns.Meter:AuditText(entry)
+  ok(text and text:find("guid=<secret>", 1, true) ~= nil,
+    "and it records the refusal as text, which is the diagnosis we need")
+  bad = {}
+  walk(UnkickedDB.audit, "audit")
+  eq(#bad, 0, "with nothing secret written  " .. table.concat(bad, ", "))
+
+  -- The logout is the thing it exists to survive.
+  f = relog(true)
+  stored = ns.Meter:StoredAudits()
+  ok(#stored >= 2, ("the audits come back after a relog (%d)"):format(#stored))
+  ok(#stored <= 4, "bounded, so the file cannot grow without limit")
+
+  -- An unknown schema is discarded WHOLE: a half-read audit describes a client
+  -- that does not exist, which is worse than having none.
+  UnkickedDB.audit.version = 99
+  eq(#ns.Meter:StoredAudits(), 0, "an audit written by a build we do not know is dropped, not half-read")
+  UnkickedDB.audit = nil
+  f = relog(true)
+
+  -- It has to LEAVE the client to be any use, and a screenshot of chat cuts off
+  -- the ends of the lines that matter -- field names. So: a box you select from.
+  stub.restricted = true
+  stub.fire("CHALLENGE_MODE_START")
+  harvested(3, 90, 0, 60)
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  local box = ns.Panel:AuditBox(true)
+  ok(box:IsShown(), "the panel's audit button opens a box")
+  local shown = box.edit:GetText()
+  ok(shown and shown:find("C_DamageMeter", 1, true) ~= nil,
+    "with the audit text in a selectable widget, not a font string")
+  ok(box.head:GetText():find("key completed", 1, true) ~= nil,
+    ("and a heading that says which audit this is (%q)"):format(box.head:GetText()))
+  ok(box.foot:GetText():find("last key", 1, true) ~= nil,
+    "and that it is the kept one rather than this moment's client")
+
+  -- Four dialogs, one corner.
+  ns.Panel:Clear(true)
+  eq(box:IsShown(), false, "opening another dialog closes it")
+
+  -- Opting out, because an automatic capture that cannot be turned off is a
+  -- setting nobody chose.
+  ns.db.autoAudit = false
+  ns.Meter:ForgetAudits()
+  stub.fire("CHALLENGE_MODE_START")
+  harvested(2, 50, 0, 60)
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  eq(#ns.Meter:StoredAudits(), 0, "/uk audit off stops the automatic capture")
+  ns.db.autoAudit = true
+
+  -- And asking by hand still prints, which is what every earlier run did.
+  local printed = 0
+  local realPrint = print
+  print = function(...) printed = printed + 1 end
+  local lines = ns.Meter:Audit()
+  print = realPrint
+  ok(#lines > 4, "/uk audit still returns its lines")
+  ok(printed > 4, "and still prints them to chat")
+  local quiet = 0
+  realPrint = print
+  print = function(...) quiet = quiet + 1 end
+  ns.Meter:Audit({ quiet = true })
+  print = realPrint
+  eq(quiet, 0, "a captured audit prints nothing -- it goes to the file, not the chat frame")
+
+  stub.restricted = false
+end
+
 print("\n[parser] handing off to tests/parser.lua")
 local interp = arg[-1] or "luajit"
 local okParser = os.execute(("%s tests/parser.lua"):format(interp))

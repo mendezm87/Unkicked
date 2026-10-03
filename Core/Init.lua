@@ -39,6 +39,7 @@ local DEFAULTS = {
   pullReport = true,         -- one chat line of kick counts after each pull
   point = { "CENTER", 240, 80 },
   locked = false,
+  autoAudit = true,       -- capture /uk audit automatically at the end of a key
 }
 
 ns.DEFAULTS = DEFAULTS

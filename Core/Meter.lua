@@ -893,17 +893,44 @@ end
 -- Prints the raw shape of each metric list rather than our interpretation of
 -- it, because the one discrepancy we cannot resolve offline (deaths) could live
 -- on either side of the join.
-function Meter:Audit()
-  if not self:Available() then ns.Print("no damage meter on this client"); return end
-  ns.Print("raw C_DamageMeter rows (current session):")
+-- The audit is the one thing no combat log can ever contain: the field names
+-- C_DamageMeter actually returns on THIS client. It existed only as a command
+-- typed by hand before logging out, which meant it was forgotten -- and a
+-- logout discards the very sessions it reads, so a forgotten audit is not a
+-- delayed answer, it is a lost one.
+--
+-- So the lines are BUILT rather than printed. The same text then goes to chat,
+-- to SavedVariables (where it survives the logout), and to the panel's copy
+-- box, instead of three near-identical dumps drifting apart.
+function Meter:Audit(opts)
+  opts = opts or {}
+  local lines = {}
+  -- Stored without colour escapes: these lines are meant to be pasted.
+  local function emit(fmt, ...)
+    local s = select("#", ...) > 0 and fmt:format(...) or fmt
+    lines[#lines + 1] = s
+    if not opts.quiet then print(s) end
+  end
+  local function head(fmt, ...)
+    local s = select("#", ...) > 0 and fmt:format(...) or fmt
+    lines[#lines + 1] = "== " .. s
+    if not opts.quiet then ns.Print(s) end
+  end
+
+  if not self:Available() then
+    head("no damage meter on this client")
+    return lines
+  end
+  head("raw C_DamageMeter rows (current session)")
+  emit(("  addon restrictions active: %s"):format(ns.Restricted() and "yes" or "no"))
   for _, name in ipairs({ "Interrupts", "DamageTaken", "Deaths" }) do
     local attr = metric(name)
     local s = attr and sessionFor("current", attr)
     local list = s and s.combatSources
     if not list then
-      print(("  %-12s no list"):format(name))
+      emit(("  %-12s no list"):format(name))
     else
-      print(("  %-12s %d rows"):format(name, #list))
+      emit(("  %-12s %d rows"):format(name, #list))
       -- The field names themselves, once per metric: if the identifier this
       -- code wants is simply spelled something other than `guid`, nothing else
       -- in this dump would ever reveal it.
@@ -911,7 +938,7 @@ function Meter:Audit()
         local keys = {}
         for k in pairs(list[1]) do keys[#keys + 1] = k end
         table.sort(keys)
-        print("      fields: " .. table.concat(keys, ", "))
+        emit("      fields: " .. table.concat(keys, ", "))
       end
       for i = 1, #list do
         local src = list[i]
@@ -920,7 +947,7 @@ function Meter:Audit()
         -- called `guid` at all, secret means it exists and may not be read.
         local g = src.guid == nil and "<absent>"
           or (ns.IsSecret(src.guid) and "<secret>" or "plain")
-        print(("    [%d] %s guid=%s recap=%s amount=%s"):format(
+        emit(("    [%d] %s guid=%s recap=%s amount=%s"):format(
           i, tostring(n or "<secret>"), g,
           tostring(ns.Plain(src.deathRecapID)),
           ns.IsSecret(src.totalAmount) and "<secret>" or tostring(ns.Plain(src.totalAmount))))
@@ -928,9 +955,9 @@ function Meter:Audit()
     end
   end
   local counted = self:KeyDeaths()
-  ns.Print("key death counter: %s; pulls harvested: %d; harvests refused by secrets: %d",
+  head("key death counter: %s; pulls harvested: %d; harvests refused by secrets: %d",
     tostring(counted), #self.pulls, self.blockedHarvests or 0)
-  ns.Print("drill-downs refused for a secret guid: %d (kickable column needs these)",
+  head("drill-downs refused for a secret guid: %d (kickable column needs these)",
     self.secretGuidRefusals or 0)
 
   -- The question this answers: the documented DamageMeterCombatSpell has no
@@ -938,7 +965,7 @@ function Meter:Audit()
   -- the API. The struct page is not the client, though, so dump what a real
   -- damage row actually carries and let the next run settle it rather than the
   -- column being left off the menu on the strength of a wiki table.
-  ns.Print("per-spell drill-down (DamageTaken) -- does a cast count exist?")
+  head("per-spell drill-down (DamageTaken) -- does a cast count exist?")
   local sawAny = false
   for i = 0, 4 do
     local unit = (i == 0) and "player" or ("party" .. i)
@@ -946,29 +973,30 @@ function Meter:Audit()
     if guid ~= nil then
       local spells, why = self:Spells("current", guid, nil, "DamageTaken")
       if not spells then
-        print(("    %-7s no spell list: %s"):format(unit, tostring(why)))
+        emit(("    %-7s no spell list: %s"):format(unit, tostring(why)))
       else
         sawAny = true
-        print(("    %-7s %d spell(s)"):format(unit, #spells))
+        emit(("    %-7s %d spell(s)"):format(unit, #spells))
         if spells[1] then
           local keys = {}
           for k in pairs(spells[1]) do keys[#keys + 1] = k end
           table.sort(keys)
-          print("      fields: " .. table.concat(keys, ", "))
+          emit("      fields: " .. table.concat(keys, ", "))
           local d = spells[1].combatSpellDetails
           if type(d) == "table" then
             local dk = {}
             for k in pairs(d) do dk[#dk + 1] = k end
             table.sort(dk)
-            print("      combatSpellDetails: " .. table.concat(dk, ", "))
+            emit("      combatSpellDetails: " .. table.concat(dk, ", "))
           end
         end
       end
     end
   end
   if sawAny then
-    ns.Print("cast count found on a spell row: %s", self.noCastCount and "NO" or "yes")
+    head("cast count found on a spell row: %s", self.noCastCount and "NO" or "yes")
   end
+  return lines
 end
 
 function Meter:Clock(s)
@@ -1242,6 +1270,107 @@ function Meter:Restore()
 
   self:Persist()
   return true
+end
+
+-- ------------------------------------------------------- the audit, kept
+-- Typing /uk audit before logging out was the plan, and it failed the way every
+-- plan that depends on remembering fails. Worse: the thing it reads -- the live
+-- combat sessions -- is discarded by the logout, so "I forgot" costs the whole
+-- run's answer, not a few minutes.
+--
+-- So it is captured automatically at the two moments that can differ, and kept
+-- in SavedVariables under the same rules as a harvested pull:
+--   1) NOTHING SECRET IS WRITTEN. The lines are built from values already
+--      checked through ns.Plain/IsSecret, but a secret that slipped into one
+--      would be serialised as an ordinary string and read back next login as a
+--      measured fact. So every line is re-checked at the boundary and only a
+--      plain string survives.
+--   2) VERSIONED, AND AN UNKNOWN VERSION IS DISCARDED WHOLE -- a half-read
+--      audit is a diagnosis of the wrong client.
+local AUDIT_VERSION = 1
+local MAX_AUDITS = 4         -- entries kept across logins
+local MAX_AUDIT_LINES = 160
+local AUDIT_LINE = 240
+
+local function auditOut(lines)
+  local out = {}
+  if type(lines) ~= "table" then return out end
+  for i = 1, math.min(#lines, MAX_AUDIT_LINES) do
+    local s = ns.Plain(lines[i])
+    if type(s) == "string" then out[#out + 1] = s:sub(1, AUDIT_LINE) end
+  end
+  return out
+end
+
+-- Why it was taken, because the two capture points sit in DIFFERENT regimes and
+-- the difference is the finding: at CHALLENGE_MODE_COMPLETED the party is still
+-- on the restricted map, and when the restriction lifts the same fields may
+-- come back plain. One audit cannot tell those apart; two can.
+function Meter:AuditCapture(reason)
+  if not ns.db then return nil end
+  if not self:Available() then return nil end
+  local lines = self:Audit({ quiet = true })
+  if not lines or #lines == 0 then return nil end
+  local entry = {
+    at = epoch(),
+    reason = strOut(reason) or "?",
+    map = strOut(self.run and self.run.mapName),
+    level = numOut(self.run and self.run.level),
+    restricted = ns.Restricted() and true or nil,
+    lines = auditOut(lines),
+  }
+  local store = ns.db.audit
+  if type(store) ~= "table" or store.version ~= AUDIT_VERSION
+     or type(store.entries) ~= "table" then
+    store = { version = AUDIT_VERSION, entries = {} }
+    ns.db.audit = store
+  end
+  table.insert(store.entries, 1, entry)
+  for i = #store.entries, MAX_AUDITS + 1, -1 do store.entries[i] = nil end
+  self.lastAudit = entry
+  return entry
+end
+
+-- Reading back. Same posture as runIn: a record that does not survive the check
+-- is dropped rather than repaired, because a repaired audit describes a client
+-- that does not exist.
+function Meter:StoredAudits()
+  local store = ns.db and ns.db.audit
+  if type(store) ~= "table" or store.version ~= AUDIT_VERSION then return {} end
+  local out = {}
+  for _, e in ipairs(store.entries or {}) do
+    if type(e) == "table" then
+      local lines = auditOut(e.lines)
+      if #lines > 0 then
+        out[#out + 1] = {
+          at = numOut(e.at) or 0, reason = strOut(e.reason) or "?",
+          map = strOut(e.map), level = numOut(e.level),
+          restricted = e.restricted == true, lines = lines,
+        }
+      end
+    end
+  end
+  return out
+end
+
+-- One pasteable block, which is the whole point: the answer has to leave the
+-- client, and a screenshot of chat loses the field names at the ends of lines.
+function Meter:AuditText(entry)
+  entry = entry or self:StoredAudits()[1]
+  if not entry then return nil end
+  local stamp = ("-- unkicked audit: %s%s%s, restrictions %s"):format(
+    entry.reason or "?",
+    entry.map and (" -- " .. entry.map) or "",
+    entry.level and ("+" .. entry.level) or "",
+    entry.restricted and "active" or "lifted")
+  return stamp .. "\n" .. table.concat(entry.lines, "\n")
+end
+
+function Meter:ForgetAudits()
+  local n = #self:StoredAudits()
+  if ns.db then ns.db.audit = nil end
+  self.lastAudit = nil
+  return n
 end
 
 -- ------------------------------------------------------------------- clearing
@@ -1797,6 +1926,26 @@ function Meter:Report()
 end
 
 -- --------------------------------------------------------------------- events
+-- One capture per reason per key, so the restriction edge cannot fire four of
+-- them in a dungeon, and silent by default except for the one line that says
+-- where the answer went -- the point is that it is ON DISK, not that it fills
+-- the chat frame at the moment the run report prints.
+local audited = {}
+local function autoAudit(reason)
+  if not ns.db or ns.db.autoAudit == false then return nil end
+  local run = Meter.run
+  local tag = (run and tostring(run.at or run.startedAt or 0) or "no-key") .. "/" .. reason
+  if audited[tag] then return nil end
+  local entry = Meter:AuditCapture(reason)
+  if not entry then return nil end
+  audited[tag] = true
+  ns.Print("audit saved (%s) -- /uk audit last to read it, or the panel's |cffffd200audit|r button to copy it",
+    reason)
+  return entry
+end
+
+-- A new key is a new client state worth auditing again.
+
 -- Mythic+ only, same gate the offline parser uses: the keystone window is the
 -- run. CHALLENGE_MODE_START states the level; difficulty alone proves nothing.
 local function startRun()
@@ -1839,6 +1988,11 @@ ns.On("CHALLENGE_MODE_COMPLETED", function()
   -- Re-written with endedAt set, so a login after this will not try to resume a
   -- key that is over.
   Meter:Persist()
+  -- Automatic, because the hand-typed version was always forgotten and the
+  -- logout that follows a key destroys what it reads. Taken HERE, while the
+  -- party is still on the restricted map, and again when the restriction lifts:
+  -- the two regimes are the question.
+  autoAudit("key completed")
 end)
 
 ns.On("CHALLENGE_MODE_RESET", function()
@@ -1854,7 +2008,15 @@ ns.On("PLAYER_REGEN_ENABLED", function() harvest(1) end)
 -- The restriction edge is the most reliable signal that amounts just became
 -- readable again -- more reliable than regen, which is about combat and not
 -- about secrets.
-ns.On("ADDON_RESTRICTION_STATE_CHANGED", function() harvest(1) end)
+ns.On("ADDON_RESTRICTION_STATE_CHANGED", function()
+  harvest(1)
+  -- Only the falling edge, and only after a key: this fires on entering a
+  -- restricted map too, where the audit would say nothing we do not already
+  -- know, and an audit per edge would be four of them per dungeon.
+  -- Gated on a key having run: leaving any restricted map fires this, and an
+  -- audit with no key behind it diagnoses a client nobody asked about.
+  if not ns.Restricted() and Meter.run then autoAudit("restrictions lifted") end
+end)
 
 ns.On("DAMAGE_METER_CURRENT_SESSION_UPDATED", function()
   if ns.Panel then ns.Panel:Refresh() end

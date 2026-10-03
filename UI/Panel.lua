@@ -38,7 +38,7 @@ local C1_W = WIDTH - 16 - (C2_W + C3_W + C4_W + C5_W + GAP * 4)
 local HEAD_Y = 22
 local ROWS_Y = HEAD_Y + ROW_H
 
-local frame, rows, menu, clearBox, colBox
+local frame, rows, menu, clearBox, colBox, auditBox
 
 local function namesOf(list, limit)
   local out = {}
@@ -343,6 +343,31 @@ function Panel:Build()
     GameTooltip:Hide()
   end)
 
+  -- The audit is taken automatically now, but it still has to LEAVE the client
+  -- to be any use, and a screenshot of the chat frame cuts off the ends of the
+  -- lines that matter -- field names. So it gets a button and a box you can
+  -- select out of, rather than only a command whose output you have to photograph.
+  frame.audit = CreateFrame("Button", nil, frame)
+  frame.audit:SetPoint("TOPLEFT", 136, -5)
+  frame.audit:SetSize(38, ROW_H)
+  frame.audit.text = frame.audit:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  frame.audit.text:SetPoint("LEFT")
+  frame.audit.text:SetText("audit")
+  frame.audit:SetScript("OnClick", function() Panel:AuditBox() end)
+  frame.audit:SetScript("OnEnter", function(self)
+    self.text:SetTextColor(0.4, 0.8, 1)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine("Audit", 1, 1, 1)
+    GameTooltip:AddLine("What C_DamageMeter returns on this client -- the one", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine("thing a combat log cannot contain. Taken by itself", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine("when a key completes; this copies it out.", 0.7, 0.7, 0.7)
+    GameTooltip:Show()
+  end)
+  frame.audit:SetScript("OnLeave", function(self)
+    self.text:SetTextColor(0.5, 0.5, 0.5)
+    GameTooltip:Hide()
+  end)
+
   -- The segment toggle. Blizzard ships Enum.DamageMeterSessionType, so current
   -- vs overall is a native idea here and not something we have to accumulate --
   -- but the overall WE show is the keystone window, summed from the pulls, so it
@@ -500,10 +525,11 @@ function Panel:Menu(show)
   if show == nil then show = not m:IsShown() end
   if not show then m:Hide(); return m end
 
-  -- Three dialogs, one corner. Two of them stacked is how you click the one you
+  -- Four dialogs, one corner. Two of them stacked is how you click the one you
   -- could not see.
   if colBox then colBox:Hide() end
   if clearBox then clearBox:Hide() end
+  if auditBox then auditBox:Hide() end
 
   local segs = (ns.Meter and ns.Meter:Segments()) or {}
   -- Segments only. The clear actions used to be appended here, which both hid
@@ -645,6 +671,7 @@ function Panel:Cols(show)
   if not show then c:Hide(); return c end
   self:Menu(false)
   self:Clear(false)
+  if auditBox then auditBox:Hide() end
 
   local modes = ns.Meter.KICKABLE_MODES
   local cur = ns.Meter:KickableMode()
@@ -742,6 +769,7 @@ function Panel:Clear(show)
   -- overlaps, and two stacked dialogs is how you click the wrong one.
   self:Menu(false)
   if colBox then colBox:Hide() end
+  if auditBox then auditBox:Hide() end
 
   local scopes = (ns.Meter and ns.Meter:ClearScopes()) or {}
   local ROW = ROW_H + 10
@@ -817,6 +845,101 @@ end
 -- Only meter mode has value columns to sort, so the hit areas are off in the
 -- other two -- an invisible button over a blank heading that silently rewrites
 -- a stored preference is worse than no button.
+-- ------------------------------------------------------------ the audit box
+-- A read-only-ish multiline edit box, because the answer has to be PASTED. The
+-- text is live in a widget rather than screenshotted: ctrl-A, ctrl-C, done.
+local AUDIT_W = 420
+local AUDIT_H = 260
+
+function Panel:AuditFrame()
+  if auditBox then return auditBox end
+  local c = CreateFrame("Frame", "UnkickedAuditBox", frame, "BackdropTemplate")
+  c:SetPoint("TOPLEFT", frame.audit, "BOTTOMLEFT", -4, -2)
+  c:SetFrameStrata("DIALOG")
+  c:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+  })
+  c:SetBackdropColor(0, 0, 0, 0.96)
+  c:SetBackdropBorderColor(0.2, 0.5, 0.7, 1)
+  c:EnableMouse(true)
+  c:SetSize(AUDIT_W, AUDIT_H)
+
+  c.head = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  c.head:SetPoint("TOPLEFT", 6, -6)
+  c.head:SetText("Audit")
+
+  c.scroll = CreateFrame("ScrollFrame", "UnkickedAuditScroll", c, "UIPanelScrollFrameTemplate")
+  c.scroll:SetPoint("TOPLEFT", 6, -(6 + ROW_H))
+  c.scroll:SetPoint("BOTTOMRIGHT", -26, 6 + ROW_H)
+
+  c.edit = CreateFrame("EditBox", nil, c.scroll)
+  c.edit:SetMultiLine(true)
+  c.edit:SetAutoFocus(false)
+  c.edit:SetFontObject("GameFontHighlightSmall")
+  c.edit:SetWidth(AUDIT_W - 40)
+  -- Escape closes it; the text itself is never meant to be edited, but it has
+  -- to stay selectable, which is why this is an EditBox and not a FontString.
+  c.edit:SetScript("OnEscapePressed", function() Panel:AuditBox(false) end)
+  c.scroll:SetScrollChild(c.edit)
+
+  c.foot = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  c.foot:SetPoint("BOTTOMLEFT", 6, 6)
+  c.foot:SetPoint("BOTTOMRIGHT", -6, 6)
+  c.foot:SetJustifyH("LEFT")
+  c.foot:SetWordWrap(false)
+
+  c:Hide()
+  auditBox = c
+  Panel.auditFrame = c
+  return c
+end
+
+-- What the box is showing, and why -- never "an audit" with no provenance. A
+-- stored one from a finished key and one taken right now in town answer
+-- different questions, and only the first is worth sending anywhere.
+function Panel:AuditEntry()
+  local stored = (ns.Meter and ns.Meter:StoredAudits()) or {}
+  if stored[1] then return stored[1], "stored" end
+  -- Nothing captured yet: take one now rather than showing an empty box, but
+  -- say that it is this moment's client and not the key's.
+  local live = ns.Meter and ns.Meter:AuditCapture("opened the box")
+  if live then return live, "live" end
+  return nil, nil
+end
+
+function Panel:AuditBox(show)
+  self:Build()
+  local c = self:AuditFrame()
+  if show == nil then show = not c:IsShown() end
+  if not show then c:Hide(); return c end
+  self:Menu(false)
+  self:Clear(false)
+  self:Cols(false)
+
+  local entry, kind = self:AuditEntry()
+  if not entry then
+    c.head:SetText("Audit")
+    c.edit:SetText("no damage meter on this client, so there is nothing to audit.")
+    c.foot:SetText("|cff808080C_DamageMeter is the only source left; see /uk why.|r")
+  else
+    local when = entry.at and entry.at > 0 and date and date("%H:%M", entry.at) or nil
+    c.head:SetText(("Audit -- %s%s%s%s"):format(
+      entry.reason or "?",
+      entry.map and (", " .. entry.map) or "",
+      entry.level and ("+" .. entry.level) or "",
+      when and (", " .. when) or ""))
+    c.edit:SetText(ns.Meter:AuditText(entry) or "")
+    c.foot:SetText(("|cff808080%s -- restrictions %s. ctrl-A, ctrl-C to copy.|r"):format(
+      kind == "stored" and "kept from the last key" or "taken just now",
+      entry.restricted and "active" or "lifted"))
+  end
+  c.edit:HighlightText(0, 0)
+  c:Show()
+  return c
+end
+
 local function headButtons(show)
   if not (frame and frame.head and frame.head.btn) then return end
   for _, b in pairs(frame.head.btn) do

@@ -28,6 +28,9 @@ local function usage()
   print("  /uk log        is the client writing WoWCombatLog.txt right now?")
   print("  /uk log on|off set combat logging (same as /combatlog)")
   print("  /uk why        why the addon reports nothing on this client")
+  print("  /uk audit      dump what C_DamageMeter returns on this client")
+  print("  |cff808080               -- taken automatically when a key completes|r")
+  print("  /uk audit last|copy|on|off|forget   read, copy or stop the stored one")
 end
 
 SlashCmdList.UNKICKED = function(msg)
@@ -187,7 +190,42 @@ SlashCmdList.UNKICKED = function(msg)
     -- three of one player's were missing). Nothing on this Mac can tell whether
     -- that is Blizzard's Deaths list, the deathRecapID filter, or our join, so
     -- this dumps the raw rows and lets the next run answer it.
-    ns.Meter:Audit()
+    --
+    -- It is taken automatically at the end of a key now, because typing it by
+    -- hand before logging out was forgotten every time -- and the logout
+    -- destroys the sessions it reads. These subcommands are for reading what
+    -- was already taken.
+    if arg == "last" or arg == "stored" then
+      local stored = ns.Meter:StoredAudits()
+      if #stored == 0 then
+        ns.Print("no audit stored yet -- one is taken when a key completes")
+      else
+        for i, e in ipairs(stored) do
+          ns.Print("audit %d: %s%s, restrictions %s%s", i,
+            e.map or "no map", e.level and ("+" .. e.level) or "",
+            e.restricted and "active" or "lifted",
+            i == 1 and "" or " (older)")
+          if i == 1 then
+            for _, line in ipairs(e.lines) do print(line) end
+          else
+            print(("  |cff808080%d lines -- the panel's audit button copies them|r"):format(#e.lines))
+          end
+        end
+      end
+    elseif arg == "copy" then
+      ns.Panel:AuditBox(true)
+    elseif arg == "off" then
+      ns.db.autoAudit = false
+      ns.Print("no automatic audit; /uk audit still works by hand")
+    elseif arg == "on" then
+      ns.db.autoAudit = true
+      ns.Print("an audit will be taken when a key completes, and again when restrictions lift")
+    elseif arg == "forget" then
+      ns.Print("discarded %d stored audit(s)", ns.Meter:ForgetAudits())
+    else
+      ns.Meter:Audit()
+      ns.Meter:AuditCapture("asked for")
+    end
 
   elseif cmd == "why" then
     ns.Print("what this client allows:")

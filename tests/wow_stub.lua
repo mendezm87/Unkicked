@@ -221,6 +221,15 @@ Enum.DamageMeterType = {
   EnemyDamageTaken = 9,
 }
 Enum.AddOnRestrictionType = Enum.AddOnRestrictionType or {}
+Enum.AddOnRestrictionType.Dungeon = Enum.AddOnRestrictionType.Dungeon or 1
+
+-- Restrictions as a switch, because the audit's whole value is that the SAME
+-- fields can differ between the restricted map and the moment it is left --
+-- a test that can only stand in one regime cannot show that.
+stub.restricted = false
+C_RestrictedActions = {
+  IsAddOnRestrictionActive = function() return stub.restricted and true or false end,
+}
 
 -- which -> list of { name, class, icon, guid, kicks, taken, deaths, isYou }
 -- Off by default so the existing "no feed at all" tests keep describing a client
