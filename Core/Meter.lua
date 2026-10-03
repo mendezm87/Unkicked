@@ -628,7 +628,13 @@ end
 function Meter:Total()
   if #self.pulls == 0 then return nil end
   local byKey, order = {}, {}
-  local total = { rows = {}, kicks = 0, deaths = 0, taken = 0, kickable = 0,
+  -- kickable starts nil, NOT 0. A hard zero is a claim that nothing the party
+  -- ate was interruptible; nil is "we never got a figure". The per-spell
+  -- drill-down needs a readable guid, which 12.x never gives us, so every
+  -- harvested pull has carried nil -- and summing those into 0 rendered the
+  -- column as a measured zero in the run view while the live view, which
+  -- computes nothing at all, rendered it blank. Same unknown, two answers.
+  local total = { rows = {}, kicks = 0, deaths = 0, taken = 0, kickable = nil,
                   duration = 0, pulls = #self.pulls }
 
   for _, pull in ipairs(self.pulls) do
@@ -638,14 +644,14 @@ function Meter:Total()
       local acc = byKey[key]
       if not acc then
         acc = { name = r.name, class = r.class, isYou = r.isYou,
-                kicks = 0, taken = 0, deaths = 0, kickable = 0 }
+                kicks = 0, taken = 0, deaths = 0, kickable = nil }
         byKey[key] = acc
         order[#order + 1] = acc
       end
       acc.kicks = acc.kicks + r.kicks
       acc.taken = acc.taken + r.taken
       acc.deaths = acc.deaths + r.deaths
-      acc.kickable = acc.kickable + (r.kickable or 0)
+      if r.kickable then acc.kickable = (acc.kickable or 0) + r.kickable end
     end
   end
 
@@ -653,7 +659,7 @@ function Meter:Total()
     total.kicks = total.kicks + acc.kicks
     total.deaths = total.deaths + acc.deaths
     total.taken = total.taken + acc.taken
-    total.kickable = total.kickable + (acc.kickable or 0)
+    if acc.kickable then total.kickable = (total.kickable or 0) + acc.kickable end
     total.rows[#total.rows + 1] = acc
   end
   -- Most kicks first. Legal here and only here: a snapshot is plain by

@@ -688,6 +688,26 @@ do
   eq(total and total.rows[1].kicks, 8, "Kicker's 5 and 3 add up")
   eq(total and total.deaths, 3, "deaths accumulate too")
 
+  -- R-34. These pulls DID drill down (the stub serves a spell list), so 0 here
+  -- is a measured zero and belongs on screen as one.
+  eq(total and total.kickable, 0, "a drill-down that ran and matched nothing is a real 0")
+
+  -- But a pull where the drill-down never ran -- the 12.x case, where the guid
+  -- comes back secret -- must not be summed into that same 0. It used to be,
+  -- which is why the run view showed a measured "0" for every player while the
+  -- live view showed the identical unknown as blank.
+  local saved = ns.Meter.pulls
+  ns.Meter.pulls = {
+    { duration = 60, rows = { { name = "Kicker", kicks = 2, taken = 10, deaths = 0 } } },
+    { duration = 60, rows = { { name = "Kicker", kicks = 1, taken = 10, deaths = 0 } } },
+  }
+  local blind = ns.Meter:Total()
+  eq(blind and blind.kicks, 3, "the rest of an undrilled pull still totals normally")
+  eq(blind and blind.kickable, nil,
+    "an unmeasured kickable total stays nil rather than claiming zero")
+  eq(blind and blind.rows[1].kickable, nil, "and so does each player's")
+  ns.Meter.pulls = saved
+
   -- The key's own counter can disagree with ours; it is reported beside our
   -- number rather than replacing it.
   eq(ns.Meter:KeyDeaths(), 3, "the client's keystone death count is readable")
@@ -942,8 +962,12 @@ do
   local f = stub.frames["UnkickedPanel"]
   ok(f._h and f._h > 100, ("with a meter the panel is a real list, not a 2-line card (height %s)")
     :format(tostring(f._h)))
-  ok(f.footer:GetText():find("not a cast count", 1, true) ~= nil,
-    "and says plainly that kickable damage is a cost, not a count of missed casts")
+  -- R-34. These stub rows have no drill-down, so the column is blank for every
+  -- one of them -- and a blank column must say WHY rather than reading as a
+  -- measured zero. This assertion used to expect the generic line, which is the
+  -- test agreeing with a panel that explained nothing.
+  ok(f.footer:GetText():find("kickable:", 1, true) ~= nil,
+    "an all-blank kickable column explains itself rather than looking measured")
 
   -- R-19. The header used to be anchored at the same y as row one, which put
   -- "kicks died taken" on top of the first player on screen.

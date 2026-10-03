@@ -628,7 +628,7 @@ local function refreshMeter()
   -- pull and a past session cannot (no by-id variant of the call exists).
   local drill = (kind == "live" and "current") or (kind == "run" and "overall") or nil
 
-  local shown = 0
+  local shown, kickableBlank = 0, true
   for i = 1, rowCount("meter") do
     local row, p = rows[i], data[i]
     if p then
@@ -646,6 +646,7 @@ local function refreshMeter()
       -- which cannot run while the values are secret. Blank during a pull.
       row.c5:SetJustifyH("RIGHT")
       row.c5:SetText(p.kickable and ("|cffff9933%s|r"):format(ns.Short(p.kickable)) or "")
+      if p.kickable then kickableBlank = false end
       row:Show()
     else
       row.rec, row.player = nil, nil
@@ -673,6 +674,14 @@ local function refreshMeter()
     frame.footer:SetText("|cff808080live: kicks pressed. kickable damage lands when the pull ends|r")
   elseif kind == "live" and not ns.Meter.run then
     frame.footer:SetText("|cff808080not in a key -- per-pull totals start at CHALLENGE_MODE_START|r")
+  elseif kickableBlank then
+    -- The column is empty for EVERY row, so say which of the two reasons it is
+    -- rather than letting a blank column read as "nothing was kickable". A
+    -- refused drill-down is ours to report; an empty spell list is the data
+    -- file's, and only one of those is worth the player doing anything about.
+    frame.footer:SetText(ns.Meter.secretGuidRefusals > 0
+      and "|cffff9933kickable: the API will not name a player's spells (guid is secret)|r"
+      or "|cff808080kickable: no proven-interruptible spell hit anyone -- parse a log to learn more|r")
   else
     frame.footer:SetText("|cff808080kickable = dmg from proven-interruptible spells, not a cast count|r")
   end
