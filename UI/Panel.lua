@@ -400,6 +400,10 @@ local function segColor(kind)
   if kind == "live" then return "|cff808080" end
   if kind == "run" then return "|cffffd200" end
   if kind == "pull" then return "|cff80b0ff" end
+  -- A key from an earlier login reads differently from one from this one, so a
+  -- stored report is never mistaken for the run in progress.
+  if kind == "saved" then return "|cff90c080" end
+  if kind == "savedpull" then return "|cff80a070" end
   return "|cffb0b0b0"
 end
 
@@ -669,6 +673,8 @@ local function refreshMeter()
     -- Say which order the rows are ACTUALLY in, rather than leaving the heading
     -- to imply one that was never applied.
     frame.footer:SetText(("|cffff9933sort by %s: %s|r"):format(by, note or "not available"))
+  elseif kind == "saved" or kind == "savedpull" then
+    frame.footer:SetText("|cff808080a key from an earlier session -- stored, not live|r")
   elseif kind == "pull" or kind == "session" then
     frame.footer:SetText("|cff808080a finished segment -- click the heading for the list|r")
   elseif shown == 0 then

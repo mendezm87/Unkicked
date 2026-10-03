@@ -657,8 +657,12 @@ end
 -- -- not the Overall session, which spans everything since login including the
 -- target dummy you hit in the city. Same window the offline parser reports on,
 -- so the two agree.
-function Meter:Total()
-  if #self.pulls == 0 then return nil end
+-- TotalOf, not Total: the same arithmetic has to serve a run restored from
+-- SavedVariables (R-37) as serves the one in memory, and a stored run's pulls
+-- are plain by construction exactly as a freshly harvested one's are.
+function Meter:TotalOf(pulls)
+  pulls = pulls or {}
+  if #pulls == 0 then return nil end
   local byKey, order = {}, {}
   -- kickable starts nil, NOT 0. A hard zero is a claim that nothing the party
   -- ate was interruptible; nil is "we never got a figure". The per-spell
@@ -667,9 +671,9 @@ function Meter:Total()
   -- column as a measured zero in the run view while the live view, which
   -- computes nothing at all, rendered it blank. Same unknown, two answers.
   local total = { rows = {}, kicks = 0, deaths = 0, taken = 0, kickable = nil,
-                  duration = 0, pulls = #self.pulls }
+                  duration = 0, pulls = #pulls }
 
-  for _, pull in ipairs(self.pulls) do
+  for _, pull in ipairs(pulls) do
     total.duration = total.duration + (pull.duration or 0)
     for _, r in ipairs(pull.rows) do
       local key = r.name or r.identity or tostring(r)
@@ -702,6 +706,8 @@ function Meter:Total()
   end)
   return total
 end
+
+function Meter:Total() return self:TotalOf(self.pulls) end
 
 -- The client's own death counter for the key, which counts deaths we were never
 -- told about by any metric. Reported beside ours rather than instead of it: a
@@ -764,6 +770,273 @@ function Meter:Clock(s)
   return ("%d:%02d"):format(math.floor(s / 60), s % 60)
 end
 
+-- ----------------------------------------------------- persistence (R-37)
+-- Harvested pulls used to die with the session. Meter.pulls is a plain Lua
+-- table and UnkickedDB held nothing but settings, so logging out to update the
+-- addon threw away a finished key's whole report -- which is exactly what
+-- happened on the Ruby Life Pools +10 -- and left the dropdown with nothing but
+-- the live segment on the next login.
+--
+-- They persist now, under four rules. The rules ARE the feature: a stored report
+-- that is subtly wrong is worse than one that was never stored, because it
+-- cannot be told apart from a measured one.
+--
+-- 1) NOTHING SECRET IS EVER WRITTEN. A pull only exists because Snapshot() found
+--    every value readable, but SavedVariables is the one boundary where a secret
+--    would be serialised to a file and read back next login as an ordinary
+--    number -- an invented fact, indistinguishable from a measured one forever
+--    after. So every field is re-checked through ns.Plain on the way out, and
+--    anything that is not a plain finite number or string is dropped.
+-- 2) THE SCHEMA IS VERSIONED, AND A VERSION WE DO NOT KNOW IS DISCARDED. Not
+--    half-read: a renamed field read as nil would report zeroes for a key that
+--    really happened.
+-- 3) A RESTORED PULL IS NEVER COUNTED TWICE. The baseline snapshot is stored
+--    beside the run, so a /reload mid-key resumes with it; and diffSnapshot's
+--    own backwards-check means a fresh post-reload session, which starts from
+--    zero, is taken whole instead of subtracted from last login's larger
+--    numbers. Double-counting is the one corruption this file already knew how
+--    to detect.
+-- 4) A RESTORED RUN IS NEVER TREATED AS LIVE. It resumes only while the client
+--    says that keystone is still running; otherwise it goes to the history,
+--    where nothing harvests into it.
+local HISTORY_VERSION = 1
+local MAX_RUNS = 5    -- keys kept across logins
+local MAX_PULLS = 30  -- pulls kept per key
+local MAX_ROWS = 10   -- rows kept per pull (a party is five, a pet makes six)
+
+local function epoch()
+  -- time() is the wall clock and survives a login; GetTime() is uptime and does
+  -- not, so a stored run is stamped with the former.
+  local t = rawget(_G, "time")
+  local v = type(t) == "function" and tonumber(t()) or nil
+  return v or 0
+end
+
+local function numOut(v)
+  v = tonumber(ns.Plain(v))
+  -- nan and inf serialise as something Lua cannot read back.
+  if v == nil or v ~= v or v == math.huge or v == -math.huge then return nil end
+  return v
+end
+
+local function strOut(v)
+  v = ns.Plain(v)
+  if type(v) ~= "string" then return nil end
+  return v:sub(1, 48)
+end
+
+local function rowOut(r)
+  return {
+    name = strOut(r.name), class = strOut(r.class), identity = strOut(r.identity),
+    isYou = (r.isYou == true) or nil,
+    kicks = numOut(r.kicks) or 0,
+    deaths = numOut(r.deaths) or 0,
+    taken = numOut(r.taken) or 0,
+    -- Stays nil when it was never measured: R-34 is that an unmeasured kickable
+    -- figure must not come back as a confident zero, and a round trip through a
+    -- file is the easiest place to lose that distinction.
+    kickable = numOut(r.kickable),
+  }
+end
+
+local function pullOut(p)
+  local out = {
+    duration = numOut(p.duration) or 0,
+    kicks = numOut(p.kicks) or 0,
+    deaths = numOut(p.deaths) or 0,
+    taken = numOut(p.taken) or 0,
+    kickable = numOut(p.kickable),
+    wholeRun = p.wholeRun and true or nil,
+    rows = {},
+  }
+  local rows = p.rows or {}
+  for i = 1, math.min(#rows, MAX_ROWS) do out.rows[i] = rowOut(rows[i]) end
+  return out
+end
+
+local function runOut(run, pulls, baseline)
+  local out = {
+    map = strOut(run.mapName), level = numOut(run.level),
+    at = numOut(run.at) or epoch(),
+    done = (run.endedAt ~= nil) or nil,
+    pulls = {},
+  }
+  -- Keep the LAST MAX_PULLS. A key that overran the cap has its recent packs
+  -- kept, and the run total is the sum of what is actually stored rather than a
+  -- figure that claims pulls the file threw away.
+  local list = pulls or {}
+  for i = math.max(1, #list - MAX_PULLS + 1), #list do
+    out.pulls[#out.pulls + 1] = pullOut(list[i])
+  end
+  if baseline then out.carry = pullOut(baseline) end
+  return out
+end
+
+-- Reading back. The stored table is a file: the player can edit it, an older
+-- build can have written it, a crash can have truncated it. So every field is
+-- checked and a record that does not survive the check is DROPPED, never
+-- repaired into something that then looks measured.
+local function rowIn(r)
+  if type(r) ~= "table" then return nil end
+  local name, ident = strOut(r.name), strOut(r.identity)
+  if name == nil and ident == nil then return nil end
+  return {
+    name = name, class = strOut(r.class), identity = ident,
+    isYou = (r.isYou == true) or nil,
+    kicks = numOut(r.kicks) or 0,
+    deaths = numOut(r.deaths) or 0,
+    taken = numOut(r.taken) or 0,
+    kickable = numOut(r.kickable),
+    stored = true,
+  }
+end
+
+local function pullIn(p)
+  if type(p) ~= "table" or type(p.rows) ~= "table" then return nil end
+  local out = {
+    duration = numOut(p.duration) or 0,
+    kicks = numOut(p.kicks) or 0,
+    deaths = numOut(p.deaths) or 0,
+    taken = numOut(p.taken) or 0,
+    kickable = numOut(p.kickable),
+    wholeRun = p.wholeRun and true or nil,
+    rows = {}, stored = true,
+  }
+  for i = 1, math.min(#p.rows, MAX_ROWS) do
+    local row = rowIn(p.rows[i])
+    if row then out.rows[#out.rows + 1] = row end
+  end
+  if #out.rows == 0 then return nil end
+  return out
+end
+
+local function runIn(rec)
+  if type(rec) ~= "table" or type(rec.pulls) ~= "table" then return nil end
+  local out = {
+    map = strOut(rec.map), level = numOut(rec.level), at = numOut(rec.at) or 0,
+    open = (rec.done ~= true) or nil, pulls = {}, stored = true,
+  }
+  for i = 1, math.min(#rec.pulls, MAX_PULLS) do
+    local pull = pullIn(rec.pulls[i])
+    if pull then out.pulls[#out.pulls + 1] = pull end
+  end
+  if #out.pulls == 0 then return nil end
+  out.carry = pullIn(rec.carry)
+  return out
+end
+
+-- Keys from earlier sessions, newest first.
+Meter.history = {}
+
+local function trimHistory()
+  for i = #Meter.history, MAX_RUNS + 1, -1 do Meter.history[i] = nil end
+end
+
+function Meter:Persist()
+  if not ns.db then return nil end
+  local h = { version = HISTORY_VERSION, runs = {} }
+  for i = 1, math.min(#self.history, MAX_RUNS) do
+    local run = self.history[i]
+    h.runs[i] = runOut({ mapName = run.map, level = run.level, at = run.at,
+                         endedAt = run.open and nil or true }, run.pulls, nil)
+  end
+  -- A run with no pulls in it is not worth a record, and writing one would make
+  -- "we were in a key" survive a logout as a key with nothing in it.
+  if self.run and #self.pulls > 0 then
+    h.current = runOut(self.run, self.pulls, self.baseline)
+  end
+  ns.db.history = h
+  return h
+end
+
+-- Move the run in memory to the front of the history. Called when a key ends,
+-- when another one starts, and when one is abandoned -- a reset key's packs
+-- really happened, so they are kept rather than deleted.
+function Meter:Archive()
+  if not self.run or #self.pulls == 0 then return nil end
+  local run = { map = self.run.mapName, level = self.run.level,
+                at = self.run.at or epoch(), pulls = {} }
+  for i, pull in ipairs(self.pulls) do run.pulls[i] = pull end
+  table.insert(self.history, 1, run)
+  trimHistory()
+  return run
+end
+
+-- Is the client still inside the keystone the stored run belongs to? Two
+-- questions, because IsChallengeModeActive is the direct answer and the
+-- keystone info is the one every build has had.
+local function keyIsActive()
+  local C = C_ChallengeMode
+  if not C then return false end
+  if C.IsChallengeModeActive then
+    local ok, active = pcall(C.IsChallengeModeActive)
+    if ok and ns.Plain(active) ~= nil then return ns.Plain(active) == true end
+  end
+  if C.GetActiveKeystoneInfo then
+    local ok, level = pcall(C.GetActiveKeystoneInfo)
+    if ok and ns.Plain(level) then return true end
+  end
+  return false
+end
+
+function Meter:Restore()
+  local h = ns.db and ns.db.history
+  if type(h) ~= "table" then return false end
+  if h.version ~= HISTORY_VERSION then
+    -- Rule 2. Dropped whole, and recorded so /uk history can say so instead of
+    -- the dropdown simply being empty for no stated reason.
+    self.historyDropped = h.version or true
+    ns.db.history = nil
+    return false
+  end
+
+  self.history = {}
+  for _, rec in ipairs(h.runs or {}) do
+    local run = runIn(rec)
+    if run then self.history[#self.history + 1] = run end
+  end
+  trimHistory()
+
+  local cur = runIn(h.current)
+  if cur then
+    if cur.open and keyIsActive() then
+      -- Same key, after a /reload or a relog inside it. The pulls already
+      -- harvested are real; the stored baseline is what keeps the next harvest
+      -- from counting them again (rule 3).
+      self.run = { level = cur.level, mapName = cur.map, at = cur.at,
+                   startedAt = GetTime() }
+      self.pulls = cur.pulls
+      self.baseline = cur.carry
+      self.resumed = #cur.pulls
+    else
+      cur.open = nil
+      table.insert(self.history, 1, cur)
+      trimHistory()
+    end
+  end
+
+  self:Persist()
+  return true
+end
+
+local function ago(at)
+  local nowSecs = epoch()
+  if not at or at <= 0 or nowSecs <= 0 or nowSecs < at then return nil end
+  local s = nowSecs - at
+  if s < 3600 then return ("%dm ago"):format(math.max(1, math.floor(s / 60))) end
+  if s < 86400 then return ("%dh ago"):format(math.floor(s / 3600)) end
+  return ("%dd ago"):format(math.floor(s / 86400))
+end
+
+function Meter:RunLabel(run)
+  local total = self:TotalOf(run.pulls)
+  local when = ago(run.at)
+  return ("%s%s  %s  %d pull%s%s"):format(
+    run.map or "key", run.level and (" +" .. run.level) or "",
+    self:Clock(total and total.duration or 0), #run.pulls,
+    #run.pulls == 1 and "" or "s", when and ("  " .. when) or "")
+end
+
 -- --------------------------------------------------------------- segments
 -- What the panel's dropdown offers, in the order it offers it.
 --
@@ -797,6 +1070,13 @@ end
 -- which is the one segment that always exists.
 function Meter:ParseSegment(key)
   if type(key) ~= "string" then return "live" end
+  -- A stored key, and a stored key's own pull. Matched before "pull:" so the
+  -- two namespaces cannot be confused: pull 2 of this key and pull 2 of the key
+  -- you ran yesterday are different pulls.
+  local run, pull = key:match("^saved:(%d+):(%d+)$")
+  if run then return "savedpull", tonumber(run), tonumber(pull) end
+  local saved = key:match("^saved:(%d+)$")
+  if saved then return "saved", tonumber(saved) end
   local n = key:match("^pull:(%d+)$")
   if n then return "pull", tonumber(n) end
   local id = key:match("^session:(.+)$")
@@ -849,6 +1129,30 @@ function Meter:Segments()
       }
     end
   end
+
+  -- Keys from earlier logins (R-37), newest first. Only each run's TOTAL is
+  -- listed: five keys times their pulls is a menu taller than the screen. The
+  -- run you have SELECTED expands to its own pulls underneath it, so a stored
+  -- pull is two clicks away rather than unreachable, and the list stays short.
+  local selected = (ns.db and type(ns.db.segment) == "string" and ns.db.segment) or ""
+  for i, run in ipairs(self.history) do
+    out[#out + 1] = {
+      key = ("saved:%d"):format(i), kind = "saved", index = i,
+      label = ("saved  %s"):format(self:RunLabel(run)),
+    }
+    local open = selected == ("saved:%d"):format(i)
+      or selected:match(("^saved:%d:%%d+$"):format(i)) ~= nil
+    if open then
+      for n, pull in ipairs(run.pulls) do
+        out[#out + 1] = {
+          key = ("saved:%d:%d"):format(i, n), kind = "savedpull", index = n,
+          label = ("   %s  %s  %d kicks"):format(
+            pull.wholeRun and "whole key" or ("pull " .. n),
+            self:Clock(pull.duration or 0), pull.kicks or 0),
+        }
+      end
+    end
+  end
   return out
 end
 
@@ -866,7 +1170,25 @@ end
 -- Blizzard has expired). nil is the signal to fall back to the live segment and
 -- SAY so, rather than drawing an empty table under a stale heading.
 function Meter:View(key)
-  local kind, n = self:ParseSegment(key)
+  local kind, n, n2 = self:ParseSegment(key)
+
+  -- A stored run, or one of its pulls. Plain by construction twice over: it was
+  -- only harvested because the values were readable, and only written because
+  -- every one of them survived ns.Plain on the way to the file.
+  if kind == "saved" or kind == "savedpull" then
+    local run = self.history[n]
+    if not run then return nil end
+    if kind == "savedpull" then
+      local pull = run.pulls[n2]
+      if not pull then return nil end
+      return pull.rows, true, ("%s  %s  %s"):format(run.map or "saved key",
+        pull.wholeRun and "whole key" or ("pull " .. n2),
+        self:Clock(pull.duration or 0)), kind
+    end
+    local total = self:TotalOf(run.pulls)
+    if not total then return nil end
+    return total.rows, true, ("saved  %s"):format(self:RunLabel(run)), kind
+  end
 
   if kind == "pull" then
     local pull = self.pulls[n]
@@ -974,6 +1296,11 @@ local function harvest(try)
   pull.wholeRun = (pull == snap and Meter.run.endedAt ~= nil) or nil
   Meter.pulls[pull.index] = pull
 
+  -- Written the moment it exists, not at logout: the report of a key you just
+  -- finished should survive a crash, a disconnect, or an alt-F4 as well as it
+  -- survives a tidy /reload.
+  Meter:Persist()
+
   if ns.db and ns.db.pullReport then Meter:Announce(pull) end
   if ns.Panel then ns.Panel:Refresh() end
 
@@ -1047,10 +1374,13 @@ local function startRun()
       if ok2 then mapName = ns.Plain(name) end
     end
   end
+  -- Whatever was in memory belongs to the key that just ended, not to this one.
+  Meter:Archive()
   Meter.pulls = {}
   Meter.baseline = nil
   Meter.run = { level = level, mapName = mapName or (GetInstanceInfo and GetInstanceInfo()) or nil,
-                startedAt = GetTime() }
+                startedAt = GetTime(), at = epoch() }
+  Meter:Persist()
   if ns.Panel then ns.Panel:Refresh() end
 end
 
@@ -1067,10 +1397,17 @@ ns.On("CHALLENGE_MODE_COMPLETED", function()
     Meter.run.reported = true
     Meter:Report()
   end
+  -- Re-written with endedAt set, so a login after this will not try to resume a
+  -- key that is over.
+  Meter:Persist()
 end)
 
 ns.On("CHALLENGE_MODE_RESET", function()
+  -- An abandoned key's packs really happened, so they are archived rather than
+  -- deleted -- the run simply stops being the live one.
+  Meter:Archive()
   Meter.pulls = {}; Meter.run = nil; Meter.baseline = nil
+  Meter:Persist()
 end)
 
 ns.On("PLAYER_REGEN_ENABLED", function() harvest(1) end)
@@ -1086,3 +1423,21 @@ end)
 ns.On("DAMAGE_METER_COMBAT_SESSION_UPDATED", function()
   if ns.Panel then ns.Panel:Refresh() end
 end)
+
+-- Restored after Init's own ADDON_LOADED handler, which is what creates ns.db --
+-- handlers run in registration order and Core/Init.lua loads first.
+ns.On("ADDON_LOADED", function(name)
+  if name ~= ADDON then return end
+  Meter:Restore()
+  if Meter.resumed then
+    ns.Print("picked up this key where you left it -- %d pull%s already harvested",
+      Meter.resumed, Meter.resumed == 1 and "" or "s")
+  end
+  if Meter.historyDropped then
+    ns.Print("stored pulls were written by a different version and have been discarded")
+  end
+end)
+
+-- Belt and braces. Everything is already written as it happens, so this only
+-- matters for a run whose last pull predates a settings change.
+ns.On("PLAYER_LOGOUT", function() Meter:Persist() end)

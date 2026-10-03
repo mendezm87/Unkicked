@@ -20,6 +20,8 @@ local function usage()
   print("  /uk overall    panel shows the whole key")
   print("  /uk pull <n>   panel shows pull n (see /uk segments)")
   print("  /uk segments   list every segment the panel can show")
+  print("  /uk history    keys kept from earlier logins; /uk history <n> shows one")
+  print("  /uk forget     throw away every stored key")
   print("  /uk sort <col> [asc|desc]  sort the panel; or click a column heading")
   print("  /uk pulls      toggle the one-line chat report after each pull")
   print("  /uk log        is the client writing WoWCombatLog.txt right now?")
@@ -88,6 +90,37 @@ SlashCmdList.UNKICKED = function(msg)
       ns.Panel:Segment("pull:" .. n)
       ns.Print("panel showing %s", (ns.Meter:SegmentLabel(ns.db.segment)) or ns.db.segment)
     end
+
+  elseif cmd == "history" then
+    -- Stored keys (R-37). A finished key's report used to die with the session,
+    -- so this list is the thing that was missing entirely.
+    local runs = ns.Meter.history or {}
+    local n = tonumber(arg)
+    if n and runs[n] then
+      ns.Panel:Segment("saved:" .. n)
+      ns.Print("panel showing %s", (ns.Meter:SegmentLabel(ns.db.segment)) or ns.db.segment)
+    elseif #runs == 0 then
+      ns.Print(ns.Meter.historyDropped
+        and "no stored keys -- what was stored came from a different version and was discarded"
+        or "no stored keys yet -- one is kept each time a key ends")
+    else
+      ns.Print("keys kept from earlier sessions (%d):", #runs)
+      for i, run in ipairs(runs) do
+        local total = ns.Meter:TotalOf(run.pulls)
+        print(("  |cff808080%d.|r %s  |cff808080%d kicks, %d deaths|r  |cff505050saved:%d|r")
+          :format(i, ns.Meter:RunLabel(run), total and total.kicks or 0,
+                  total and total.deaths or 0, i))
+      end
+      print("  |cff808080/uk history <n> shows one; its own pulls appear in the dropdown under it.|r")
+    end
+
+  elseif cmd == "forget" then
+    ns.Meter.history = {}
+    ns.Meter:Persist()
+    if type(ns.db.segment) == "string" and ns.db.segment:find("^saved:") then
+      ns.Panel:Segment("current")
+    end
+    ns.Print("stored keys discarded -- this key in progress is untouched")
 
   elseif cmd == "sort" then
     -- Same thing the column headings do, for anyone who would rather type it.

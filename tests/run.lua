@@ -24,7 +24,9 @@ end
 
 -- ------------------------------------------------------------- load the addon
 local ns
-local function loadAddon()
+-- keepDB simulates a RELOG rather than a fresh install: the SavedVariables table
+-- is exactly what the last session left behind.
+local function loadAddon(keepDB)
   ns = {}
   local files = {
     "Data/InterruptData.lua", "Data/CCData.lua",
@@ -36,7 +38,7 @@ local function loadAddon()
     local chunk = assert(loadfile(f), "cannot load " .. f)
     chunk("Unkicked", ns)
   end
-  UnkickedDB = nil
+  if not keepDB then UnkickedDB = nil end
   stub.fire("ADDON_LOADED", "Unkicked")
   stub.ns = ns
   return ns
@@ -1347,6 +1349,186 @@ do
   stub.meter.available = true
   ns.Panel:Refresh()
   eq(f.head.btn.kicks:IsShown(), true, "and they come back with it")
+end
+
+-- ================================= pulls that survive a logout (R-37)
+-- "If we can get them to persist without corrupting the data then do it."
+--
+-- The corruption this guards against is specific and all of it is testable:
+-- a secret value serialised into the file and read back next login as an
+-- ordinary number; a schema we do not understand half-read into confident
+-- zeroes; and the same pull counted twice because a restored run was diffed
+-- against a session that had started over.
+print("\n[meter] harvested pulls persist across a logout")
+do
+  local function relog(keepDB)
+    loadAddon(keepDB)
+    assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+    assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
+    stub.fire("PLAYER_LOGIN")
+    return stub.frames["UnkickedPanel"]
+  end
+
+  local function harvested(kicks, taken, deaths, duration)
+    stub.setMeter("current", {
+      { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k",
+        kicks = kicks, taken = taken, deaths = deaths },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 10, mapID = 500, mapName = "Ruby Life Pools", deaths = 0 }
+  local f = relog(false)
+
+  stub.fire("CHALLENGE_MODE_START")
+  harvested(5, 100, 0, 60)
+  harvested(9, 250, 1, 150)   -- cumulative, so this pull is a delta of 4
+  eq(#ns.Meter.pulls, 2, "two pulls harvested inside the key")
+
+  -- Written as it happens, so a crash or a disconnect keeps the report too.
+  local stored = UnkickedDB.history
+  ok(type(stored) == "table", "the pulls reach SavedVariables without waiting for logout")
+  eq(stored.version, 1, "under a schema version")
+  eq(stored.current and #stored.current.pulls, 2, "with both pulls in the open run")
+  ok(stored.current.carry ~= nil, "and the baseline snapshot, which is what prevents a double count")
+
+  -- Rule 1, swept: nothing in the file may be a secret, and nothing may be a
+  -- type that cannot survive being written and read back.
+  local bad = {}
+  local function walk(t, path)
+    for k, v in pairs(t) do
+      local at = path .. "." .. tostring(k)
+      if issecretvalue(v) then bad[#bad + 1] = at .. " (secret)"
+      elseif type(v) == "table" then walk(v, at)
+      elseif type(v) ~= "number" and type(v) ~= "string" and type(v) ~= "boolean" then
+        bad[#bad + 1] = ("%s (%s)"):format(at, type(v))
+      end
+    end
+  end
+  walk(stored, "history")
+  eq(#bad, 0, "every stored value is a plain number, string or boolean  " .. table.concat(bad, ", "))
+
+  -- And the boundary itself, forced: a secret handed to Persist is DROPPED, not
+  -- written as whatever number happens to be inside it.
+  local row = ns.Meter.pulls[1].rows[1]
+  local realName, realTaken = row.name, row.taken
+  row.name, row.taken = stub.secret("Ghost"), stub.secret(999)
+  ns.Meter:Persist()
+  local out = UnkickedDB.history.current.pulls[1].rows[1]
+  eq(out.name, nil, "a secret name is dropped at the file boundary")
+  eq(out.taken, 0, "and a secret amount is never written as a number")
+  row.name, row.taken = realName, realTaken
+  ns.Meter:Persist()
+
+  -- --------------------------------------------- a relog INSIDE the key resumes
+  stub.challenge.active = true
+  f = relog(true)
+  eq(#ns.Meter.pulls, 2, "both pulls come back after a relog inside the key")
+  eq(ns.Meter.resumed, 2, "and the key is picked up rather than started from scratch")
+  eq(ns.Meter.pulls[2].kicks, 4, "a restored pull keeps its own delta, not the session's running total")
+  ok(ns.Meter.baseline ~= nil, "the stored baseline comes back with it")
+
+  -- The session the server is reporting did NOT start over, so the next harvest
+  -- must be a delta against the restored baseline. This is the double count.
+  harvested(11, 300, 1, 200)
+  eq(#ns.Meter.pulls, 3, "a pull after the relog is harvested")
+  eq(ns.Meter.pulls[3].kicks, 2, "as a delta against the restored baseline")
+  eq(ns.Meter:Total().kicks, 11, "so the run total still equals what the server is reporting")
+
+  -- And when it DID start over, the snapshot stands on its own rather than being
+  -- subtracted from last login's larger numbers.
+  harvested(3, 50, 0, 30)
+  eq(ns.Meter.pulls[4].kicks, 3, "a session that went backwards is a new session, taken whole")
+
+  -- ------------------------------------------ a relog AFTER the key does not
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  stub.challenge.active, stub.challenge.level = nil, nil
+  stub.wallclock = stub.wallclock + 7200
+  f = relog(true)
+  eq(#ns.Meter.pulls, 0, "a relog after the key is over does not resume it")
+  eq(ns.Meter.run, nil, "there is no live run to harvest into")
+  eq(#ns.Meter.history, 1, "it is kept as a stored key instead")
+  eq(#ns.Meter.history[1].pulls, 4, "with every pull it had")
+  local total = ns.Meter:TotalOf(ns.Meter.history[1].pulls)
+  eq(total and total.kicks, 14, "and the stored run totals the same as it did live")
+  eq(total and total.deaths, 1, "deaths included")
+
+  -- In the dropdown, and bounded: a stored key lists its TOTAL, and only the
+  -- selected one expands to its pulls.
+  local function keys()
+    local byKey = {}
+    for _, seg in ipairs(ns.Meter:Segments()) do byKey[seg.key] = seg end
+    return byKey
+  end
+  local byKey = keys()
+  ok(byKey["saved:1"] ~= nil, "the stored key is offered as a segment")
+  ok(byKey["saved:1"].label:find("Ruby Life Pools", 1, true) ~= nil,
+    ("named after the dungeon it was (%q)"):format(byKey["saved:1"].label))
+  ok(byKey["saved:1"].label:find("2h ago", 1, true) ~= nil,
+    "and stamped with the wall clock, which unlike GetTime survives a logout")
+  eq(byKey["saved:1:1"], nil, "its pulls stay collapsed until it is the one selected")
+
+  ns.Panel:Segment("saved:1")
+  byKey = keys()
+  ok(byKey["saved:1:4"] ~= nil, "selecting it expands its own pulls underneath it")
+  ok(f.footer:GetText():find("earlier session", 1, true) ~= nil,
+    ("and the panel says these rows are stored, not live (%q)"):format(f.footer:GetText()))
+
+  local rows, plain, label, kind = ns.Meter:View("saved:1:2")
+  eq(kind, "savedpull", "a stored pull is its own kind of segment")
+  eq(plain, true, "its amounts are readable -- they were readable when they were written")
+  eq(rows and rows[1] and rows[1].kicks, 4, "and it still shows that pull's own 4 kicks")
+  ok(label and label:find("pull 2", 1, true) ~= nil, "under its own heading")
+  eq(ns.Meter:View("saved:9"), nil, "a stored key that is not there resolves to nothing")
+  ns.db.segment = "saved:9"
+  ns.Panel:Refresh()
+  eq(ns.db.segment, "current", "so a stale stored key falls back to the live segment")
+
+  ok(pcall(SlashCmdList.UNKICKED, "history"), "/uk history lists the stored keys")
+  ok(pcall(SlashCmdList.UNKICKED, "history 1"), "/uk history 1 selects one")
+  eq(ns.db.segment, "saved:1", "and the panel follows")
+
+  -- ----------------------------------------------------- refusing to half-read
+  UnkickedDB.history.version = 99
+  relog(true)
+  eq(#ns.Meter.history, 0, "a schema version we do not know is discarded whole")
+  ok(ns.Meter.historyDropped ~= nil, "and says so, rather than the list simply being empty")
+
+  -- A stored table is a file: editable, truncatable, writable by an older build.
+  UnkickedDB.history = { version = 1, runs = {
+    { map = "Good", level = 10, done = true, at = stub.wallclock,
+      pulls = { { duration = 10, kicks = 1, deaths = 0, taken = 2,
+                  rows = { { name = "A", kicks = 1, deaths = 0, taken = 2 } } } } },
+    { map = "No pulls", done = true, pulls = {} },
+    { map = "Junk pulls", done = true, pulls = "nope" },
+    "not even a table",
+    { map = "Nameless rows", done = true, pulls = { { rows = { { kicks = 2 } } } } },
+  } }
+  relog(true)
+  eq(#ns.Meter.history, 1, "a malformed record is dropped, never repaired into something that looks measured")
+  eq(ns.Meter.history[1].map, "Good", "and the good one is still there")
+
+  -- The file cannot be allowed to grow without limit.
+  ns.Meter.history = {}
+  for i = 1, 7 do
+    ns.Meter.run = { mapName = "Key " .. i, level = i, at = stub.wallclock }
+    ns.Meter.pulls = { { duration = 10, kicks = i, deaths = 0, taken = 0,
+                         rows = { { name = "Kicker", kicks = i, deaths = 0, taken = 0 } } } }
+    ns.Meter:Archive()
+  end
+  eq(#ns.Meter.history, 5, "only the five most recent keys are kept")
+  eq(ns.Meter.history[1].map, "Key 7", "newest first")
+  ns.Meter:Persist()
+  eq(#UnkickedDB.history.runs, 5, "and that is what reaches the file")
+
+  ok(pcall(SlashCmdList.UNKICKED, "forget"), "/uk forget throws the stored keys away")
+  eq(#ns.Meter.history, 0, "leaving none in memory")
+  eq(#UnkickedDB.history.runs, 0, "nor in the file")
+  stub.challenge = { level = nil, mapID = nil, mapName = nil, deaths = 0 }
 end
 
 -- ============================================================ the offline path

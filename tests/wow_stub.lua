@@ -351,8 +351,11 @@ C_DamageMeter = {
   ResetAllCombatSessions = function() end,
 }
 
-stub.challenge = { level = nil, mapID = nil, mapName = nil, deaths = 0 }
+stub.challenge = { level = nil, mapID = nil, mapName = nil, deaths = 0, active = nil }
 C_ChallengeMode = {
+  -- active is deliberately nil unless a test sets it, so the fallback path
+  -- (a keystone level is readable) is exercised as well as the direct answer.
+  IsChallengeModeActive = function() return stub.challenge.active end,
   GetActiveKeystoneInfo = function() return stub.challenge.level end,
   GetActiveChallengeMapID = function() return stub.challenge.mapID end,
   GetMapUIInfo = function() return stub.challenge.mapName end,
@@ -369,6 +372,11 @@ IsInInstance = function()
 end
 
 C_Timer = { After = function(_, fn) fn() end }
+
+-- The wall clock, which unlike GetTime() survives a logout and is what a stored
+-- run is stamped with.
+stub.wallclock = 1770000000
+time = function() return stub.wallclock end
 
 -- Lua 5.2+ moved unpack; WoW is 5.1 where it is global.
 unpack = unpack or table.unpack

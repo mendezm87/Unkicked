@@ -142,6 +142,45 @@ With no file argument it looks for `WoWCombatLog.txt` in the usual
 | `--json` | one JSON object per pull on stdout, for an overlay or a second monitor |
 | `--knowledge PATH` | the interruptibility knowledge file (see below) |
 
+### Pulls that survive a logout
+
+A harvested pull used to die with the session: `Meter.pulls` was an in-memory
+table and `UnkickedDB` held only settings, so logging out to update the addon
+threw away a finished key's whole report and left the dropdown with nothing but
+the live view. Pulls, the keystone they belong to, and the **five most recent past
+keys** are now stored in `UnkickedDB.history`, written as each pull is harvested
+rather than at logout — so a crash or a disconnect keeps them too.
+
+```
+> key so far  12:40
+  run  12:40  2 pulls
+  whole key  1:00  5 kicks
+  saved  Ruby Life Pools +10  17:09  8 pulls  2h ago
+  saved  The Blinding Vale +13  24:11  1 pull  1d ago
+```
+
+A stored key lists its total; select it and its own pulls appear underneath,
+because five keys' worth of pulls is a menu taller than the screen. `/uk history`
+is the same list in chat, `/uk forget` empties it.
+
+Four rules keep the stored copy honest, and each is a test:
+
+- **Nothing secret is ever written.** Every field is re-checked through `ns.Plain`
+  on the way out. A secret serialised into a file comes back next login as an
+  ordinary number — an invented fact that can never again be told from a measured
+  one.
+- **The schema is versioned**, and a version this build does not know is discarded
+  whole rather than half-read into confident zeroes.
+- **A restored pull is never counted twice.** The baseline snapshot is stored
+  beside the run, so a `/reload` mid-key resumes from it; a session that came back
+  from zero is taken whole instead of being subtracted from last login's larger
+  numbers.
+- **A restored run only resumes while the client says that keystone is still
+  running.** Otherwise it goes to the history, where nothing harvests into it.
+
+Caps are 5 keys × 30 pulls × 10 rows, and a malformed stored record is dropped
+rather than repaired.
+
 ## What the log can do that the addon never could
 
 Two things improve offline, because a combat log states what the client refuses to
@@ -312,6 +351,8 @@ prints exactly which parts of the old design the client still refuses.
 | `/uk segments` | list every segment the panel can show |
 | `/uk sort <col> [asc\|desc]` | sort the panel — or just click the column heading |
 | `/uk pull <n>` | panel shows pull *n* |
+| `/uk history` | keys kept from earlier logins; `/uk history <n>` shows one |
+| `/uk forget` | throw away every stored key |
 | `/uk pulls` | toggle the one-line chat report after each pull |
 | `/uk` | toggle the panel |
 | `/uk clear` | drop the current list |
