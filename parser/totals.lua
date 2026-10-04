@@ -254,10 +254,20 @@ function Totals:byVictim(sort)
   return out
 end
 
+-- Only the people who were actually in THIS run. The availability snapshot is
+-- taken per cast from every player the log has ever shown in a group, which is
+-- right in game (the live party) and wrong offline once a keystone is restarted
+-- with a different group -- the reader cannot tell a real 0-on-cooldown row from
+-- somebody who was not in the dungeon. A run with no membership recorded (the
+-- "all runs" grand total before anything merged into it) filters nothing.
 function Totals:byPlayer(sort)
   local out = {}
+  local members = self.run and self.run.members
+  if members and next(members) == nil then members = nil end
   for name, p in pairs(self.players) do
+    if not members or members[name] then
     out[#out + 1] = { name = name, chances = p.chances, down = p.down, cc = p.cc, unknown = p.unknown }
+    end
   end
   arrange("players", out, function(a, b)
     if a.chances ~= b.chances then return a.chances > b.chances end

@@ -560,6 +560,81 @@ do
   eq(byName["In-key pull"].runIndex, 2, "pulls are numbered within their own run")
 end
 
+print("\n[parser] a restarted key is a new group, and the old one stops being counted")
+do
+  -- Altar of Fangs on 10/03 was restarted six times after wipes, with people
+  -- swapped between attempts. Availability is snapshotted per cast from every
+  -- player the log has ever seen in a group, so the completed +12 reported TWELVE
+  -- names who were not in it, each with "18 up / 0 on cd" -- indistinguishable
+  -- from a party member who really did sit on their interrupt all key.
+  local runs = {}
+  local ns6 = host.init(".")
+  local s6 = Session.new(ns6, {
+    host = host, quietGap = 5, knowledge = Knowledge.load("/dev/null"),
+    onPull = function() end, onRun = function(r) runs[#runs + 1] = r end,
+  })
+  local function L(t, body) s6:line(("10/3/2026 %s-7  %s"):format(t, body)) end
+  local function pull(t, who, guid)
+    L(t .. ":00.000", "ENCOUNTER_START,9100,\"Pack\",23,5,2993")
+    L(t .. ":05.000", ("SPELL_DAMAGE,Creature-0-9,\"Serpent\",0xa48,0x0,%s,\"%s\",0x512,0x0,1,\"Bite\",1,100,-1,1,0,0,0,nil,nil,nil"):format(guid, who))
+    L(t .. ":30.000", "ENCOUNTER_END,9100,\"Pack\",23,5,1,30000")
+  end
+  L("22:08:00.000", "COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.0,PROJECT_ID,1")
+  L("22:08:31.000", "ZONE_CHANGE,2993,\"Altar of Fangs\",23")
+  L("22:09:59.000", "CHALLENGE_MODE_START,\"Altar of Fangs\",2993,588,17,[10,9,147]")
+  pull("22:10", "Sparkdragoon-Tichondrius-US", "Player-11-AAAA")
+  L("22:13:42.000", "CHALLENGE_MODE_END,2993,0,0,0,0.000000,0.000000")
+  L("22:13:43.000", "ZONE_CHANGE,2993,\"Altar of Fangs\",23")
+  L("22:52:11.000", "CHALLENGE_MODE_START,\"Altar of Fangs\",2993,588,12,[10,9,147]")
+  pull("22:53", "Lilphae-Area52-US", "Player-11-BBBB")
+  L("23:14:07.000", "CHALLENGE_MODE_END,2993,1,12,1307770,375.254791,3042.507324")
+  s6:flush()
+
+  eq(#runs, 2, "a keystone restarted after a wipe is a second run, not more of the first")
+  ok(runs[1].members["Sparkdragoon-Tichondrius-US"], "the first attempt knows who was in it")
+  ok(not runs[1].members["Lilphae-Area52-US"], "and not who replaced them later")
+  ok(runs[2].members["Lilphae-Area52-US"], "the second attempt knows its own group")
+  ok(not runs[2].members["Sparkdragoon-Tichondrius-US"],
+    "and the player who left is not a member of it")
+  eq(runs[1].completed, false, "the attempt that was restarted is marked not completed")
+  eq(runs[2].completed, true, "and the one that timed is not")
+  has(report.overall(Totals.new(runs[1]), { color = false }), "(abandoned)",
+    "which the heading says, so five runs of the same dungeon are not five identical headings")
+
+  -- The same parser is run DURING a key, on a log that simply stops mid-run.
+  -- That run has no END either, and calling it abandoned would be a fabrication.
+  local open = {}
+  local ns7 = host.init(".")
+  local s7 = Session.new(ns7, {
+    host = host, quietGap = 5, knowledge = Knowledge.load("/dev/null"),
+    onPull = function() end, onRun = function(r) open[#open + 1] = r end,
+  })
+  local function M(t, body) s7:line(("10/3/2026 %s-7  %s"):format(t, body)) end
+  M("22:08:00.000", "COMBAT_LOG_VERSION,22,ADVANCED_LOG_ENABLED,1,BUILD_VERSION,12.1.0,PROJECT_ID,1")
+  M("22:08:31.000", "ZONE_CHANGE,2993,\"Altar of Fangs\",23")
+  M("22:09:59.000", "CHALLENGE_MODE_START,\"Altar of Fangs\",2993,588,12,[10,9,147]")
+  M("22:10:00.000", "ENCOUNTER_START,9100,\"Pack\",23,5,2993")
+  M("22:10:30.000", "ENCOUNTER_END,9100,\"Pack\",23,5,1,30000")
+  s7:flush()
+  eq(open[1] and open[1].completed, nil, "a key the log stops inside is unknown, not abandoned")
+end
+
+do
+  -- The filter itself, which is what the reader actually sees: a name the run
+  -- never had is dropped from the availability table rather than printed with the
+  -- chances it accrued while standing in another attempt.
+  local t = Totals.new({ zone = "Altar of Fangs", members = { ["Lilphae-Area52-US"] = true } })
+  t.players["Lilphae-Area52-US"] = { chances = 7, down = 11, cc = 0, unknown = 0 }
+  t.players["Sparkdragoon-Tichondrius-US"] = { chances = 18, down = 0, cc = 0, unknown = 0 }
+  local rows = t:byPlayer()
+  eq(#rows, 1, "only the run's own members are listed")
+  eq(rows[1].name, "Lilphae-Area52-US", "and it is the one who was there")
+
+  local grand = Totals.new({ zone = "all runs" })
+  grand.players["Sparkdragoon-Tichondrius-US"] = { chances = 18, down = 0, cc = 0, unknown = 0 }
+  eq(#grand:byPlayer(), 1, "a total with no membership recorded filters nothing")
+end
+
 do
   -- A log can start mid-dungeon, with no ZONE_CHANGE to open a run. The pulls
   -- must still be totalled rather than dropped on the floor.

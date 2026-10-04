@@ -126,9 +126,18 @@ an archive containing several keys gives you one report each plus a file-wide
 total. In `--follow` mode a one-line running total is appended after each pull so
 the run figure stays visible between pulls.
 
+**A restarted key is its own run.** A keystone put in a second time after a wipe
+produces a second report, with its own total and its own group — a night of six
+Altar of Fangs attempts reads as six runs plus the one that timed, not as one
+blended total. An attempt the log shows was reset is headed `(abandoned)`; a key
+the log simply **stops inside** — which is what you get running this mid-key — is
+not, because that is not something the log said.
+
 **Read the player column as chances, not blame.** It counts how often someone's
 interrupt was believed up while a cast got through. The log cannot see whether
-they were in range of the caster or busy keeping the group alive.
+they were in range of the caster or busy keeping the group alive. It lists the
+people who were in **that** run: a party member swapped in for one attempt is not
+reported as having stood around for the others.
 
 **macOS / Linux:**
 
@@ -165,13 +174,20 @@ rather than at logout — so a crash or a disconnect keeps them too.
 > key so far  12:40
   run  12:40  2 pulls
   whole key  1:00  5 kicks
+  saved  Altar of Fangs +17 (abandoned)  1:13  3 pulls  1h ago
   saved  Ruby Life Pools +10  17:09  8 pulls  2h ago
   saved  The Blinding Vale +13  24:11  1 pull  1d ago
 ```
 
 A stored key lists its total; select it and its own pulls appear underneath,
-because five keys' worth of pulls is a menu taller than the screen. `/uk history`
+because ten keys' worth of pulls is a menu taller than the screen. `/uk history`
 is the same list in chat.
+
+A key that was **restarted after a wipe** never reaches
+`CHALLENGE_MODE_COMPLETED`, and it is stored as the attempt it was: the line
+reads `(abandoned)`, so six tries at one dungeon are six distinguishable entries
+rather than six identical ones. Ten keys are kept rather than five for the same
+reason — one bad night is six of them.
 
 ### Choosing what the last column shows
 

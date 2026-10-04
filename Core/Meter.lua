@@ -1072,7 +1072,11 @@ end
 --    says that keystone is still running; otherwise it goes to the history,
 --    where nothing harvests into it.
 local HISTORY_VERSION = 1
-local MAX_RUNS = 5    -- keys kept across logins
+-- Keys kept across logins. Ten rather than five because a key is restarted after
+-- a wipe: the Altar of Fangs was attempted six times on 10/03, which at five
+-- would have pushed that night's completed Kings' Rest out of the history before
+-- the player ever logged out.
+local MAX_RUNS = 10
 local MAX_PULLS = 30  -- pulls kept per key
 local MAX_ROWS = 10   -- rows kept per pull (a party is five, a pet makes six)
 
@@ -1228,8 +1232,13 @@ function Meter:Persist()
   local h = { version = HISTORY_VERSION, runs = {} }
   for i = 1, math.min(#self.history, MAX_RUNS) do
     local run = self.history[i]
+    -- NOT `run.open and nil or true`: in Lua that is `(true and nil) or true`,
+    -- which is true for every run, open or not -- so a key that was abandoned
+    -- came back from the file claiming it had been completed.
+    local endedAt = true
+    if run.open then endedAt = nil end
     h.runs[i] = runOut({ mapName = run.map, level = run.level, at = run.at,
-                         endedAt = run.open and nil or true }, run.pulls, nil)
+                         endedAt = endedAt }, run.pulls, nil)
   end
   -- A run with no pulls in it is not worth a record, and writing one would make
   -- "we were in a key" survive a logout as a key with nothing in it.
@@ -1246,7 +1255,12 @@ end
 function Meter:Archive()
   if not self.run or #self.pulls == 0 then return nil end
   local run = { map = self.run.mapName, level = self.run.level,
-                at = self.run.at or epoch(), pulls = {} }
+                at = self.run.at or epoch(), pulls = {},
+                -- A key with no endedAt never reached CHALLENGE_MODE_COMPLETED:
+                -- it was reset or restarted. Five attempts at the same dungeon at
+                -- the same level are otherwise five identical lines in the
+                -- dropdown, and the one that counted is unfindable among them.
+                open = (self.run.endedAt == nil) or nil }
   for i, pull in ipairs(self.pulls) do run.pulls[i] = pull end
   table.insert(self.history, 1, run)
   trimHistory()
@@ -1584,8 +1598,9 @@ end
 function Meter:RunLabel(run)
   local total = self:TotalOf(run.pulls)
   local when = ago(run.at)
-  return ("%s%s  %s  %d pull%s%s"):format(
+  return ("%s%s%s  %s  %d pull%s%s"):format(
     run.map or "key", run.level and (" +" .. run.level) or "",
+    (run.stored and run.open) and " (abandoned)" or "",
     self:Clock(total and total.duration or 0), #run.pulls,
     #run.pulls == 1 and "" or "s", when and ("  " .. when) or "")
 end

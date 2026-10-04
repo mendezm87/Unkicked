@@ -173,7 +173,7 @@ local showPulls = opts.segment ~= "overall"
 local showOverall = opts.segment ~= "current"
 
 -- One Totals per run, plus a grand total in case the log covers several runs.
-local totals, grand = nil, Totals.new({ zone = "all runs" })
+local totals, grand = nil, Totals.new({ zone = "all runs", members = {} })
 
 local session = Session.new(ns, {
   host = host,
@@ -186,6 +186,10 @@ local session = Session.new(ns, {
     if not totals or totals.run ~= pull.run then totals = Totals.new(pull.run) end
     totals:add(pull, opts.minDamage)
     grand:add(pull, opts.minDamage)
+    -- The grand total spans every run, so its membership is the union of theirs.
+    for name in pairs((pull.run and pull.run.members) or {}) do
+      grand.run.members[name] = true
+    end
 
     -- Selected out, but still counted into the run total: "show me pull 7" is a
     -- request to read one pull, not a claim that the other nine did not happen.

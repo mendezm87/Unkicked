@@ -134,6 +134,14 @@ end
 local function runLabel(run)
   local bits = { (run and run.zone) or "run" }
   if run and run.keystone then bits[#bits + 1] = ("+%d"):format(run.keystone) end
+  -- A key that the log says explicitly did NOT time is worth naming: a night of
+  -- restarts produces several runs of the same dungeon at the same level, and
+  -- otherwise they are told apart only by their durations. `completed` is nil
+  -- when no CHALLENGE_MODE_END was ever read -- including mid-key, where this is
+  -- run on a log the key is still being played into -- and nil is not a claim.
+  if run and run.keystone and run.completed == false then
+    bits[#bits + 1] = "(abandoned)"
+  end
   return table.concat(bits, " ")
 end
 

@@ -90,6 +90,13 @@ function Session:noteActor(guid, name, flags)
   local p = players[guid]
   if not p then p = {}; players[guid] = p end
   if name and name ~= "" and not p.name then p.name = name end
+  -- Membership is scoped to the RUN, not to the log. A keystone restarted after a
+  -- wipe opens a new run, and the group may not be the same one -- on 10/03 the
+  -- Altar of Fangs was restarted six times with people swapped between attempts,
+  -- and every player ever seen was reported "up" for every cast of every later
+  -- run: twelve names who were not in the key, each credited 18 chances. In game
+  -- Kick:Rebuild answers this from the live party; offline the log has to.
+  if self.run and p.name then self.run.members[p.name] = true end
 end
 
 function Session:onCombatantInfo(fields)
@@ -97,6 +104,10 @@ function Session:onCombatantInfo(fields)
   if not info then return end
   self.ns.Kick:SetKnown(info.guid, info.specID, info.entries)
   self.roster[info.guid] = true
+  -- COMBATANT_INFO is the party as the server saw it at the pull, so it is the
+  -- better membership statement of the two when it exists.
+  local p = self.ns.Kick.players[info.guid]
+  if self.run and p and p.name then self.run.members[p.name] = true end
 end
 
 -- ------------------------------------------------------------------- the runs
@@ -105,17 +116,30 @@ function Session:openRun(at, zoneID, zone, difficulty)
   self.runs = self.runs + 1
   self.run = {
     index = self.runs, zoneID = zoneID, zone = zone, difficulty = difficulty,
-    startedAt = at, pulls = 0,
+    startedAt = at, pulls = 0, members = {},
   }
   return self.run
 end
 
-function Session:closeRun(at)
+-- `why` is how the run ended: "zone" when the party left the instance, "key"
+-- when a second keystone started here, nil when the log simply ran out. It is
+-- the only thing that separates "they abandoned this key" from "the log you are
+-- parsing stops in the middle of it", which matters because a mid-key run of
+-- this parser is a supported thing to do.
+function Session:closeRun(at, why)
   local run = self.run
   self.run = nil
   if not run then return end
   run.endedAt = at or self.now or run.startedAt
   run.elapsed = run.endedAt - run.startedAt
+  -- Leaving the instance, or putting a second stone in, with a key open and no
+  -- CHALLENGE_MODE_END recorded for it: that key did not time. The six Altar of
+  -- Fangs attempts on 10/03 all end this way -- the party zones out to reset,
+  -- so the END line arrives after the run is already closed.
+  if run.keystone and run.keyStart and not run.keyEnd
+    and (why == "zone" or why == "key") and run.completed == nil then
+    run.completed = false
+  end
   -- A zone we only walked through is not a run worth totalling.
   if run.pulls == 0 then self.runs = self.runs - 1; return end
   if self.onRun then self.onRun(run) end
@@ -273,7 +297,7 @@ function Session:line(line)
     -- Several ZONE_CHANGE lines for the same instance appear back to back on
     -- load; only a genuinely different instance id is a new run.
     if not self.run or self.run.zoneID ~= zoneID then
-      self:closeRun(ts)
+      self:closeRun(ts, "zone")
       self.lastZoneID, self.lastZone, self.lastDifficulty = zoneID, zone, difficulty
       -- difficulty 0 / instance id 0 is the open world, which is not a run.
       if zoneID and zoneID ~= 0 then self:openRun(ts, zoneID, zone, difficulty) end
@@ -284,6 +308,13 @@ function Session:line(line)
     self:closePull(ts)
     -- Enriches the run label with the key rather than starting a new one: the
     -- ZONE_CHANGE that put us in the instance already opened it.
+    --
+    -- Unless a key has ALREADY run here. A keystone restarted after a wipe fires
+    -- a second START, and folding it into the same run would move keyStart
+    -- forward and clear keyEnd -- quietly putting the first attempt's pulls
+    -- outside the key window, where the mythic+ gate drops them. Each attempt is
+    -- its own run, with its own total and its own group.
+    if self.run and self.run.keyStart then self:closeRun(ts, "key") end
     local run = self:ensureRun(ts)
     run.keystone = tonumber(f[5])
     run.zone = f[2] or run.zone

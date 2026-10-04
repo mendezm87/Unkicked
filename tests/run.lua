@@ -1597,29 +1597,34 @@ do
 
   -- The file cannot be allowed to grow without limit.
   ns.Meter.history = {}
-  for i = 1, 7 do
-    ns.Meter.run = { mapName = "Key " .. i, level = i, at = stub.wallclock }
+  -- Twelve, because the cap is ten: a night of restarts at one dungeon really
+  -- does archive six runs of it, and five would have evicted the rest of the
+  -- night before the player logged out.
+  for i = 1, 12 do
+    ns.Meter.run = { mapName = "Key " .. i, level = i, at = stub.wallclock,
+                     endedAt = 1 }
     ns.Meter.pulls = { { duration = 10, kicks = i, deaths = 0, taken = 0,
                          rows = { { name = "Kicker", kicks = i, deaths = 0, taken = 0 } } } }
     ns.Meter:Archive()
   end
-  eq(#ns.Meter.history, 5, "only the five most recent keys are kept")
-  eq(ns.Meter.history[1].map, "Key 7", "newest first")
+  eq(#ns.Meter.history, 10, "only the ten most recent keys are kept")
+  eq(ns.Meter.history[1].map, "Key 12", "newest first")
   ns.Meter:Persist()
-  eq(#UnkickedDB.history.runs, 5, "and that is what reaches the file")
+  eq(#UnkickedDB.history.runs, 10, "and that is what reaches the file")
+
 
   -- ---------------------------------------------------------------- clearing
   -- Stored pulls cannot be re-harvested, so the bare command must NOT clear:
   -- it says what each scope would take and waits to be told which.
   ok(pcall(SlashCmdList.UNKICKED, "forget"), "/uk forget on its own is a question")
-  eq(#ns.Meter.history, 5, "and throws nothing away")
+  eq(#ns.Meter.history, 10, "and throws nothing away")
 
   -- One key, by its /uk history number.
   local before = #ns.Meter.history
   local keys, pulls = ns.Meter:Forget(2)
   eq(keys, 1, "/uk forget <n> drops exactly one stored key")
   eq(#ns.Meter.history, before - 1, "leaving the rest")
-  eq(ns.Meter.history[1].map, "Key 7", "and the newest is still the newest")
+  eq(ns.Meter.history[1].map, "Key 12", "and the newest is still the newest")
   eq(select(1, ns.Meter:Forget(99)), nil, "a key that does not exist is refused")
   eq(select(1, ns.Meter:Forget("nonsense")), nil, "and so is a scope we do not know")
   eq(#ns.Meter.history, before - 1, "neither of which clears anything")
@@ -1761,6 +1766,35 @@ end
 -- the sessions it reads. The field names C_DamageMeter returns on a given
 -- client are the one thing no combat log can ever contain, so a forgotten audit
 -- is not a delayed answer -- it is a lost one.
+print("\n[meter] a key restarted after a wipe is stored as the attempt it was")
+do
+    -- A key that was restarted after a wipe never reached CHALLENGE_MODE_COMPLETED,
+    -- so it is archived WITHOUT an endedAt -- and five attempts at the same dungeon
+    -- at the same level are otherwise five identical lines in the dropdown.
+    ns.Meter.history = {}
+    ns.Meter.run = { mapName = "Altar of Fangs", level = 17, at = stub.wallclock }
+    ns.Meter.pulls = { { duration = 10, kicks = 1, deaths = 0, taken = 0,
+                         rows = { { name = "Kicker", kicks = 1, deaths = 0, taken = 0 } } } }
+    ns.Meter:Archive()
+    ns.Meter.run = { mapName = "Altar of Fangs", level = 12, at = stub.wallclock, endedAt = 1 }
+    ns.Meter.pulls = { { duration = 10, kicks = 2, deaths = 0, taken = 0,
+                         rows = { { name = "Kicker", kicks = 2, deaths = 0, taken = 0 } } } }
+    ns.Meter:Archive()
+    ns.Meter:Persist()
+    loadAddon(true)
+    stub.fire("PLAYER_LOGIN")
+    local abandoned, timed
+    for _, run in ipairs(ns.Meter.history) do
+      if run.level == 17 then abandoned = run elseif run.level == 12 then timed = run end
+    end
+    ok(abandoned and abandoned.open, "a restarted key is stored as not completed")
+    ok(timed and not timed.open, "and the one that timed is not")
+    ok(ns.Meter:RunLabel(abandoned):find("(abandoned)", 1, true) ~= nil,
+      "which the dropdown says")
+    ok(not ns.Meter:RunLabel(timed):find("abandoned", 1, true),
+      "and does not say of the key that counted")
+end
+
 print("\n[meter] the audit takes itself at the end of a key, and survives the logout")
 do
   local function relog(keepDB)
