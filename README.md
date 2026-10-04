@@ -183,7 +183,7 @@ panel's title bar** picks which question it answers:
 | mode | what it shows |
 |---|---|
 | `damage` | damage taken from spells proven interruptible |
-| `casts` | casts of those spells — **only if the client reports a count** |
+| `casts` | **unavailable — this API has no cast count.** Measured on a live client by `/uk audit` (Altar of Fangs +12): a damage row carries `spellID`, `totalAmount`, `amountPerSecond`, `creatureName`, `overkillAmount`, `isAvoidable`, `isDeadly`, `combatSpellDetails` and no count under any name. Greyed, with the reason; **cast counts come from the parser.** |
 | `spells` | how many different interruptible spells hit them |
 | `overkill` | overkill from those spells — what actually killed someone |
 | `off` | hide the column |
