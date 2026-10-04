@@ -1840,8 +1840,13 @@ do
   local entry = ns.Meter:AuditCapture("asked for")
   ok(entry ~= nil, "an audit is still takeable when the guids are secret")
   local text = ns.Meter:AuditText(entry)
-  ok(text and text:find("guid=<secret>", 1, true) ~= nil,
+  -- The field NAME is part of the diagnosis now: reading `guid` on a client that
+  -- spells it `sourceGUID` printed <absent>, which was misread for a fortnight as
+  -- "the guid is secret". Naming the field distinguishes the two outright.
+  ok(text and text:find("sourceGUID=<secret>", 1, true) ~= nil,
     "and it records the refusal as text, which is the diagnosis we need")
+  ok(text and text:find("guid=<absent>", 1, true) == nil,
+    "a present-but-secret identifier is never reported as absent")
   bad = {}
   walk(UnkickedDB.audit, "audit")
   eq(#bad, 0, "with nothing secret written  " .. table.concat(bad, ", "))
@@ -1905,6 +1910,107 @@ do
   eq(quiet, 0, "a captured audit prints nothing -- it goes to the file, not the chat frame")
 
   stub.restricted = false
+end
+
+print("\n[meter] the end-of-key harvest never counts the key twice")
+do
+  -- MEASURED, 2026-10-03, Altar of Fangs +12. 17 pulls were harvested inside the
+  -- key and the panel then read `run 34:00  18 pulls` for a key the end-of-key
+  -- report put at 12:57. Every player's run figure was his key total plus the
+  -- whole session over again:
+  --     Wtbjudgement 37 + 41 = 78    Lilphae    9 + 12 = 21
+  --     Grizlark      5 +  9 = 14    Opdruidd   4 +  4 =  8
+  -- An 18th "pull" holding the entire session had been appended beside the 17
+  -- that already described it.
+  loadAddon(false)
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+
+  local function session(kicks, taken, duration)
+    stub.setMeter("current", {
+      { name = "Wtbjudgement", class = "PALADIN", icon = 11, guid = "P-w",
+        kicks = kicks, taken = taken, deaths = 0 },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 12, mapID = 2993, mapName = "Altar of Fangs", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  session(20, 1000, 300)
+  session(37, 2000, 777)        -- cumulative: two pulls, 37 kicks between them
+  eq(#ns.Meter.pulls, 2, "two pulls harvested inside the key")
+  eq(ns.Meter:Total().kicks, 37, "and the run total is what the key report says")
+
+  -- The key ends and the restriction lifts. Blizzard answers with a session that
+  -- went BACKWARDS in duration -- a different session by our own rule -- but
+  -- which already holds everything the key did, and more.
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  stub.setMeter("current", {
+    { name = "Wtbjudgement", class = "PALADIN", icon = 11, guid = "P-w",
+      kicks = 78, taken = 4000, deaths = 0 },
+  }, { duration = 120 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+
+  local total = ns.Meter:Total()
+  eq(total.kicks, 78, "the whole-run read REPLACES the pulls it covers, never adds to them")
+  ok(total.kicks ~= 37 + 78, "37 + 78 = 115 is the double count this exists to prevent")
+  eq(#ns.Meter.pulls, 1, "and it stands alone, because it is the whole key")
+  ok(ns.Meter.pulls[1].wholeRun == true, "labelled the whole key rather than pull 3")
+
+  -- The other half: a session that holds LESS than we harvested is genuinely new
+  -- combat, and must still be appended rather than thrown away.
+  stub.setMeter("current", {
+    { name = "Wtbjudgement", class = "PALADIN", icon = 11, guid = "P-w",
+      kicks = 2, taken = 50, deaths = 0 },
+  }, { duration = 30 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 2, "a smaller fresh session is new combat, so it is appended")
+  eq(ns.Meter:Total().kicks, 80, "and adds to the run instead of replacing it")
+end
+
+print("\n[meter] a row is matched across the secret-name boundary")
+do
+  -- The second mechanism behind the same double count. Inside the dungeon a
+  -- row's name is secret, so a baseline row could only be keyed on its identity
+  -- (classFilename/specIconID); when the restriction lifted the name went plain
+  -- and the next snapshot keyed on the NAME. Nothing matched, so nothing was
+  -- subtracted and the cumulative session was counted whole.
+  loadAddon(false)
+  stub.fire("PLAYER_LOGIN")
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+
+  -- A baseline with no name on it at all -- the shape the restricted map gives.
+  local base = {
+    duration = 100, kicks = 30, taken = 900, deaths = 0,
+    rows = { { name = nil, identity = "PALADIN/11", class = "PALADIN",
+               kicks = 30, taken = 900, deaths = 0 } },
+  }
+  local snap = {
+    duration = 200, kicks = 40, taken = 1200, deaths = 0,
+    rows = { { name = "Wtbjudgement", identity = "PALADIN/11", class = "PALADIN",
+               kicks = 40, taken = 1200, deaths = 0 } },
+  }
+  local d = ns.Meter:Difference(snap, base)
+  eq(d.kicks, 10, "the delta is 10, not the 40 a failed name match would have given")
+  eq(d.rows[1].kicks, 10, "and the row carries the same delta as the total")
+  eq(d.joinDrift, nil, "so the totals and the rows agree, which is the check on the join")
+
+  -- And the drift counter itself: a row that genuinely cannot be matched is
+  -- reported rather than silently corrected.
+  local orphan = {
+    duration = 200, kicks = 40, taken = 1200, deaths = 0,
+    rows = { { name = "Someone Else", identity = "ROGUE/12", class = "ROGUE",
+               kicks = 40, taken = 1200, deaths = 0 } },
+  }
+  local e = ns.Meter:Difference(orphan, base)
+  ok(e.joinDrift ~= nil, "an unmatchable row is counted as drift, not hidden")
 end
 
 print("\n[parser] handing off to tests/parser.lua")

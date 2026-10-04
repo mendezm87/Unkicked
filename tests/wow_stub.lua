@@ -277,8 +277,15 @@ local function sourcesFor(which, attr)
       name = (stub.meter.secretNames and p.name ~= nil) and stub.secret(p.name)
         or (stub.meter.plainNames and p.name)
         or maybeSecret(p.name),
-      guid = (stub.meter.secretGuids and p.guid ~= nil) and stub.secret(p.guid)
+      -- MEASURED 2026-10-03 (Altar of Fangs +12, /uk audit): the identifier is
+      -- spelled `sourceGUID`, and there is no `guid` field at all. The stub
+      -- emitted `guid`, so every test agreed with code reading a field the real
+      -- client does not have. These three are the rest of that measured row.
+      sourceGUID = (stub.meter.secretGuids and p.guid ~= nil) and stub.secret(p.guid)
         or maybeSecret(p.guid),
+      classification = 0,
+      sourceDisplayType = 0,
+      deathTimeSeconds = 0,
     }
     if attr == E.Deaths then
       -- one entry per death, not a player with a count

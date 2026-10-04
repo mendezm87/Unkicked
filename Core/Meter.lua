@@ -183,6 +183,23 @@ end
 -- so they are the only in-combat join key. Two players of one spec collide, so
 -- the key is only trusted when it is unique in BOTH lists -- a blank cell beats
 -- swapping two players' numbers.
+-- MEASURED, 2026-10-03 (Altar of Fangs +12, /uk audit): a combatSources row has
+-- NO field called `guid`. The audit dumped the real key list and the identifier
+-- is spelled `sourceGUID`:
+--   amountPerSecond, classFilename, classification, deathRecapID,
+--   deathTimeSeconds, isLocalPlayer, name, sourceDisplayType, sourceGUID,
+--   specIconID, totalAmount
+-- Every read of src.guid was therefore nil -- not secret, ABSENT -- which is why
+-- `guid=<absent>` printed on every row, why the definitive join never once ran,
+-- and why "a row's guid is secret" (recorded 2026-10-01) was the wrong
+-- diagnosis: we were reading a field that does not exist. `guid` is kept as a
+-- fallback because an older build did answer to it.
+local function srcGUID(src)
+  local g = src.sourceGUID
+  if g == nil then g = src.guid end
+  return g
+end
+
 local function identityOf(src)
   local class = ns.Plain(src.classFilename)
   local icon = ns.Plain(src.specIconID)
@@ -202,7 +219,7 @@ local function indexOf(which, attr, countOnly)
   for i = 1, #list do
     local src = list[i]
     local counts = (not countOnly) or isRealDeath(src)
-    local guid = ns.Plain(src.guid)
+    local guid = ns.Plain(srcGUID(src))
     local ident = identityOf(src)
     if guid ~= nil then
       if idx.byGuid[guid] == nil then idx.byGuid[guid] = src; idx.posGuid[guid] = i end
@@ -376,7 +393,7 @@ function Meter:Rows(which)
   local secret = false
 
   local function add(src)
-    local guid = ns.Plain(src.guid)
+    local guid = ns.Plain(srcGUID(src))
     local ident = identityOf(src)
     local key = (guid ~= nil and ("g:" .. tostring(guid)))
       or (ident and ("i:" .. ident))
@@ -594,8 +611,16 @@ end
 Meter.KICKABLE_MODES = {
   { key = "damage",   label = "kickable", field = "damage",
     note = "damage taken from spells proven interruptible" },
+  -- SETTLED, 2026-10-03 (Altar of Fangs +12, /uk audit, 5 units, 29-59 spells
+  -- each). A real damage row on a live client carries exactly:
+  --   amountPerSecond, combatSpellDetails, creatureName, isAvoidable, isDeadly,
+  --   overkillAmount, spellID, totalAmount
+  -- and combatSpellDetails carries amount, classification, isMob, isPet,
+  -- unitClassFilename, unitName. No count under any of the seven names a count
+  -- could plausibly take. The client agrees with the struct page: there is no
+  -- cast count in this API, and the panel can never show one.
   { key = "casts",    label = "kickable", field = "casts",
-    note = "casts of those spells -- only if the client reports a count" },
+    note = "no cast count exists in this API -- measured on a live client" },
   { key = "spells",   label = "kickable", field = "spells",
     note = "how many different interruptible spells hit them" },
   { key = "overkill", label = "overkill", field = "overkill",
@@ -738,6 +763,9 @@ function Meter:Snapshot(which)
     local r = {
       name = row.name, class = row.class, isYou = row.isYou,
       identity = row.identity,
+      -- Carried so the next snapshot can match on it: a plain sourceGUID is the
+      -- one key that means the same thing inside and outside the restriction.
+      guid = row.guid,
       kicks = tonumber(row.kicks) or 0,
       taken = tonumber(row.taken) or 0,
       deaths = row.deaths or 0,
@@ -774,6 +802,7 @@ end
 -- working, /uk audit says so, and if it never does, the audit says that too
 -- instead of the kickable column silently staying blank forever.
 Meter.secretGuidRefusals = 0
+Meter.joinDrift = 0
 
 function Meter:Spells(which, guid, creatureID, attrName)
   local attr = metric(attrName or "Interrupts")
@@ -945,8 +974,15 @@ function Meter:Audit(opts)
         local n = ns.Plain(src.name)
         -- nil and secret are DIFFERENT diagnoses: nil means the field is not
         -- called `guid` at all, secret means it exists and may not be read.
-        local g = src.guid == nil and "<absent>"
-          or (ns.IsSecret(src.guid) and "<secret>" or "plain")
+        -- absent / secret / plain are THREE different diagnoses, and conflating
+        -- the first two cost a fortnight: absent means the identifier is not
+        -- spelled the way this code spells it, secret means it exists and may
+        -- not be read. The field actually used is named, so a future rename
+        -- announces itself instead of looking like a new restriction.
+        local gv, gname = srcGUID(src), (src.sourceGUID ~= nil and "sourceGUID")
+          or (src.guid ~= nil and "guid") or nil
+        local g = gv == nil and "<absent>"
+          or (("%s=%s"):format(gname, ns.IsSecret(gv) and "<secret>" or "plain"))
         emit(("    [%d] %s guid=%s recap=%s amount=%s"):format(
           i, tostring(n or "<secret>"), g,
           tostring(ns.Plain(src.deathRecapID)),
@@ -959,6 +995,8 @@ function Meter:Audit(opts)
     tostring(counted), #self.pulls, self.blockedHarvests or 0)
   head("drill-downs refused for a secret guid: %d (kickable column needs these)",
     self.secretGuidRefusals or 0)
+  head("pull deltas whose rows did not match the totals: %d (0 is correct)",
+    self.joinDrift or 0)
 
   -- The question this answers: the documented DamageMeterCombatSpell has no
   -- count field of any kind, so "show casts instead of damage" has no source in
@@ -1780,7 +1818,29 @@ end
 
 -- A snapshot is cumulative; a pull is the difference between two of them.
 -- Returns nil when nothing happened between the two.
-local function rowKey(r) return r.name or r.identity or tostring(r) end
+-- Matching a row in one snapshot to the same player in the next.
+--
+-- MEASURED, 2026-10-03 (Altar of Fangs +12): this was a single `r.name or
+-- r.identity` key, and it DOUBLE-COUNTED THE ENTIRE KEY. Inside the dungeon a
+-- row's name is secret, so every mid-key baseline row keyed on its identity;
+-- when the restriction lifted the names went plain and the next snapshot keyed
+-- on the NAME instead. No key matched, nothing was subtracted, and the final
+-- snapshot was added whole on top of the 17 pulls already harvested. The panel
+-- read `run 34:00  18 pulls` for a 12:57 key, and every player's run figure was
+-- exactly his key total plus the whole session again (37+41=78, 9+12=21,
+-- 5+9=14, 4+4=8).
+--
+-- So a row is indexed under EVERY key it has, and looked up most-stable first.
+-- identity (classFilename/specIconID) is the only one readable in both regimes;
+-- the guid is definitive when present; the name is last because it is the one
+-- that changes availability across exactly the boundary this has to survive.
+local function keysOf(r)
+  local k = {}
+  if r.guid ~= nil then k[#k + 1] = "g:" .. tostring(r.guid) end
+  if r.identity then k[#k + 1] = "i:" .. r.identity end
+  if r.name then k[#k + 1] = "n:" .. r.name end
+  return k
+end
 
 local function diffSnapshot(snap, base)
   if not base then return snap end
@@ -1794,7 +1854,17 @@ local function diffSnapshot(snap, base)
   Meter.cumulative = true
 
   local was = {}
-  for _, r in ipairs(base.rows) do was[rowKey(r)] = r end
+  for _, r in ipairs(base.rows) do
+    for _, k in ipairs(keysOf(r)) do
+      if was[k] == nil then was[k] = r end
+    end
+  end
+  local function priorOf(r)
+    for _, k in ipairs(keysOf(r)) do
+      if was[k] then return was[k] end
+    end
+    return nil
+  end
 
   -- kickable is NOT seeded to 0 here. It used to be, and `(r.kickable or 0) -
   -- ...` below turned every unmeasured pull into a measured zero on the way
@@ -1803,9 +1873,10 @@ local function diffSnapshot(snap, base)
   local out = { rows = {}, duration = (snap.duration or 0) - (base.duration or 0),
                 kicks = 0, deaths = 0, taken = 0, kickable = nil }
   for _, r in ipairs(snap.rows) do
-    local b = was[rowKey(r)]
+    local b = priorOf(r)
     local d = {
       name = r.name, class = r.class, isYou = r.isYou, identity = r.identity,
+      guid = r.guid,
       kicks = r.kicks - (b and b.kicks or 0),
       taken = r.taken - (b and b.taken or 0),
       deaths = r.deaths - (b and b.deaths or 0),
@@ -1830,8 +1901,24 @@ local function diffSnapshot(snap, base)
     if d.kick then out.kick = addStats(out.kick, d.kick) end
     out.rows[#out.rows + 1] = d
   end
+
+  -- The totals can be differenced WITHOUT any join, so they are the check on the
+  -- join: both numbers come from the same two snapshots, and they can only
+  -- disagree if a row failed to find its predecessor. That is the shape of the
+  -- double-count above, and it went unnoticed for a fortnight because nothing
+  -- ever compared the two. Counted, surfaced by /uk audit, never silently
+  -- corrected -- a clamp here would hide the next variant of it.
+  local drift = out.kicks - (snap.kicks - base.kicks)
+  if drift ~= 0 then
+    Meter.joinDrift = (Meter.joinDrift or 0) + 1
+    out.joinDrift = drift
+  end
   return out
 end
+
+-- Exposed so the join can be tested directly: it is the one place where two
+-- regimes of readability meet, and it double-counted a whole key once already.
+function Meter:Difference(snap, base) return diffSnapshot(snap, base) end
 
 -- ------------------------------------------------------------------- harvest
 -- Values go plain when the RESTRICTION lifts, which on a dungeon map is not the
@@ -1859,9 +1946,35 @@ local function harvest(try)
   -- enough to say out loud, the same rule the offline parser uses.
   if pull.kicks == 0 and pull.taken == 0 and pull.deaths == 0 then return end
 
+  -- A snapshot taken WHOLE (diffSnapshot could not difference it -- no baseline,
+  -- or the session went backwards and is a different one) re-covers ground the
+  -- pulls already in hand may describe. Adding it beside them counts that ground
+  -- twice, which is what `run 34:00  18 pulls` was for a 12:57 key.
+  --
+  -- The two cases are told apart by size, not by guesswork: a fresh session that
+  -- ALREADY HOLDS at least what we harvested is the same fight read again, and
+  -- supersedes it; one holding less is genuinely new combat and is appended. The
+  -- superseded pulls are not deleted silently -- the surviving pull says it is
+  -- the whole run, which is what the dropdown labels "whole key".
+  local taken = (pull == snap)
+  if taken and #Meter.pulls > 0 then
+    local had = { kicks = 0, taken = 0, deaths = 0 }
+    for _, p in ipairs(Meter.pulls) do
+      had.kicks, had.taken, had.deaths =
+        had.kicks + (p.kicks or 0), had.taken + (p.taken or 0), had.deaths + (p.deaths or 0)
+    end
+    if pull.kicks >= had.kicks and pull.taken >= had.taken and pull.deaths >= had.deaths then
+      Meter.superseded = (Meter.superseded or 0) + #Meter.pulls
+      Meter.pulls = {}
+      pull.wholeRun = true
+    end
+  end
+
   pull.index = #Meter.pulls + 1
   -- The honest name for "the first thing we could read was the finished key".
-  pull.wholeRun = (pull == snap and Meter.run.endedAt ~= nil) or nil
+  if pull.wholeRun == nil then
+    pull.wholeRun = (taken and Meter.run.endedAt ~= nil) or nil
+  end
   Meter.pulls[pull.index] = pull
 
   -- Written the moment it exists, not at logout: the report of a key you just

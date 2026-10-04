@@ -5,6 +5,7 @@
 return {
   [267273] = true,
   [267763] = true,
+  [269369] = true,  -- Deathly Roar
   [269972] = true,
   [270492] = true,
   [270901] = true,
@@ -16,8 +17,8 @@ return {
   [384194] = true,
   [385310] = true,
   [392576] = true,
-  [400001] = true,  -- Tidal Bolt
-  [400002] = true,  -- Hex Bolt
+  [400001] = true,
+  [400002] = true,
   [1228176] = true,
   [1233398] = true,
   [1235616] = true,
@@ -27,6 +28,9 @@ return {
   [1239821] = true,
   [1247669] = true,
   [1249621] = true,
+  [1258431] = true,  -- Shadow Bolt
+  [1289416] = true,  -- Envenom
+  [1294557] = true,  -- Piercing Hiss
   [1294815] = true,
   [1294972] = true,
   [1295125] = true,
@@ -34,5 +38,8 @@ return {
   [1299938] = true,
   [1301834] = true,
   [1305955] = true,
+  [1307567] = true,  -- Mass Envenom
   [1310324] = true,
+  [1310358] = true,  -- Toxic Atrophy
+  [1310666] = true,  -- Toxic Atrophy
 }
