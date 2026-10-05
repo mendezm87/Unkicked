@@ -189,6 +189,14 @@ reads `(abandoned)`, so six tries at one dungeon are six distinguishable entries
 rather than six identical ones. Ten keys are kept rather than five for the same
 reason — one bad night is six of them.
 
+The same goes for a key you simply **walk out of**. There is no event for that —
+the client has one for a key you time and one for a key you reset at the stone,
+and none for a group that wipes and leaves — so leaving the dungeon with the
+keystone no longer active closes the run itself. Everything readable on the way
+out is harvested first, because leaving the restricted map is also the moment the
+amounts go plain; then the run is archived as `(abandoned)` instead of staying
+the panel's live `run` until you log in again.
+
 ### Choosing what the last column shows
 
 The last column used to answer exactly one question — how much damage each
@@ -242,10 +250,16 @@ a screenshot of the chat frame cuts off the ends of exactly the lines that matte
 **How many casts went unkicked is still the parser's answer.** The panel can only
 report what landed; which casts got through needs `WoWCombatLog.txt`.
 
-When the column is blank for everyone, the footer says which of eleven reasons it
+When the column is blank for everyone, the footer says which of twelve reasons it
 is — a refused drill-down, a segment stored without one, a mode this client
 cannot answer, or genuinely nothing kickable hitting anyone. Only the last of
 those is a fact about the fight.
+
+A `0` and a blank mean different things and are not interchangeable. A `0` is a
+drill-down that ran, found that player's spells, and matched none of them. A
+player the panel shows taking damage whose per-spell list comes back **empty**
+has not been measured at all — the drill-down found nobody — and that renders
+blank with the reason, not as a zero.
 
 ### Clearing it
 

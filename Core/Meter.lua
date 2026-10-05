@@ -670,12 +670,27 @@ end
 --             which of six different things happened instead of the footer
 --             asserting "none of the known casts hit anyone", which is a
 --             measurement, and was being claimed on a view that never measured.
-function Meter:Kickable(which, guid)
+function Meter:Kickable(which, guid, taken)
   if guid == nil then return nil, nil, nil, "no-unit" end
   local spells, why = self:Spells(which, guid, nil, "DamageTaken")
   if not spells then return nil, nil, nil, why or "no-spells" end
-  -- An EMPTY list is not a failure. The call succeeded and the answer is that
-  -- nothing hit this player, which is a measured zero and renders as one.
+  -- An EMPTY list is not a failure BY ITSELF. The call succeeded and the answer
+  -- may be that nothing hit this player, which is a measured zero and renders
+  -- as one.
+  --
+  -- But the row's own DamageTaken total is the check on it, and the two cannot
+  -- both be true: a player the panel shows eating 19.1m, whose per-spell list
+  -- comes back empty, was not found by the drill-down -- the list belongs to
+  -- nobody. MEASURED, 2026-10-04 (Den of Nalorakk +10, abandoned): four of five
+  -- rows rendered `0` distinct interruptible spells while the log proves every
+  -- one of them ate Earth Bolt, a cast in the shipped MDT list. Only the local
+  -- player, whose GUID comes from isLocalPlayer and needs no name join,
+  -- resolved. Blank with a reason is the honest rendering of a join that found
+  -- nothing; a 0 is a claim nobody measured.
+  if #spells == 0 and taken and taken > 0 then
+    self.noRows = (self.noRows or 0) + 1
+    return nil, nil, nil, "no-rows"
+  end
 
   -- Whether a count field exists is a property of the CLIENT, so it is settled
   -- from every spell row in the list, not only the interruptible ones -- a pull
@@ -692,11 +707,12 @@ function Meter:Kickable(which, guid)
   local stats = { damage = 0, spells = 0, overkill = 0 }
   if sawCount then stats.casts = 0 end
 
-  local by = {}
+  local by, allAmount = {}, 0
   for i = 1, #spells do
     local sp = spells[i]
     local id = ns.Plain(sp.spellID)
     local amount = tonumber(ns.Plain(sp.totalAmount))
+    allAmount = allAmount + (amount or 0)
     if id and amount and ns.IsKickable(id) == true then
       local n = countOf(sp)
       local over = tonumber(ns.Plain(sp.overkillAmount)) or 0
@@ -711,6 +727,15 @@ function Meter:Kickable(which, guid)
   -- A drill-down that RAN and matched nothing is a measured zero, and stays a
   -- zero: R-34 cuts both ways. Only "we never got a figure" is blank.
   table.sort(by, function(a, b) return a.amount > b.amount end)
+
+  -- Same principle as the join check in diffSnapshot: the two numbers come from
+  -- the same metric, so they are each other's test. A per-spell list that does
+  -- not add up to the row it was fetched for is a join that landed somewhere
+  -- else. COUNTED and surfaced by /uk audit, never silently corrected -- a
+  -- clamp here would hide the next variant of it.
+  if taken and taken > 0 and allAmount > 0 and allAmount ~= taken then
+    self.spellTotalDrift = (self.spellTotalDrift or 0) + 1
+  end
 
   local mode = self:KickableMode()
   if not mode.field then return nil, by, stats, "off" end
@@ -775,7 +800,7 @@ function Meter:Snapshot(which)
     -- The whole stats table, not just the damage figure: the column's mode can
     -- be changed after a key is over, and a pull that stored only one of the
     -- four answers would go blank the moment the player asked for another.
-    local _, by, stats = self:Kickable(which, row.unitGUID or row.guid)
+    local _, by, stats = self:Kickable(which, row.unitGUID or row.guid, tonumber(row.taken))
     r.kickableBy, r.kick = by, stats
     r.kickable = stats and stats.damage or nil
     if r.kickable then out.kickable = (out.kickable or 0) + r.kickable end
@@ -803,6 +828,10 @@ end
 -- instead of the kickable column silently staying blank forever.
 Meter.secretGuidRefusals = 0
 Meter.joinDrift = 0
+-- Drill-downs that came back empty for a player the same session says took
+-- damage, and per-spell lists whose own total disagrees with that row.
+Meter.noRows = 0
+Meter.spellTotalDrift = 0
 
 function Meter:Spells(which, guid, creatureID, attrName)
   local attr = metric(attrName or "Interrupts")
@@ -839,6 +868,7 @@ Meter.KICKABLE_WHY = {
   ["refused"]     = "the per-spell call was refused",
   ["no-source"]   = "nobody took damage in this segment",
   ["no-spells"]   = "the drill-down returned no spell list",
+  ["no-rows"]     = "the drill-down found no spells for a player who took damage",
   ["empty"]       = "nobody took damage in this segment",
   ["no-match"]    = "none of the %d known interruptible casts hit anyone",
   ["no-count"]    = "this client reports no cast count -- parse the log for casts",
@@ -993,10 +1023,19 @@ function Meter:Audit(opts)
   local counted = self:KeyDeaths()
   head("key death counter: %s; pulls harvested: %d; harvests refused by secrets: %d",
     tostring(counted), #self.pulls, self.blockedHarvests or 0)
+  -- The discriminator for a run total that reads SMALLER than the key really
+  -- was: a snapshot taken whole supersedes the pulls it already covers, and if
+  -- the client opens a fresh session mid-key that rule discards real combat.
+  head("pulls superseded by a whole-session read: %d (0 means none were discarded)",
+    self.superseded or 0)
   head("drill-downs refused for a secret guid: %d (kickable column needs these)",
     self.secretGuidRefusals or 0)
   head("pull deltas whose rows did not match the totals: %d (0 is correct)",
     self.joinDrift or 0)
+  head("drill-downs that came back empty for a player who took damage: %d (0 is correct)",
+    self.noRows or 0)
+  head("per-spell lists disagreeing with the row they were fetched for: %d (0 is correct)",
+    self.spellTotalDrift or 0)
 
   -- The question this answers: the documented DamageMeterCombatSpell has no
   -- count field of any kind, so "show casts instead of damage" has no source in
@@ -1600,7 +1639,10 @@ function Meter:RunLabel(run)
   local when = ago(run.at)
   return ("%s%s%s  %s  %d pull%s%s"):format(
     run.map or "key", run.level and (" +" .. run.level) or "",
-    (run.stored and run.open) and " (abandoned)" or "",
+    -- Not gated on `stored` any more: a key abandoned THIS session is archived
+    -- in memory and read identically to one that timed until the next login,
+    -- which is exactly when you are looking for it.
+    run.open and " (abandoned)" or "",
     self:Clock(total and total.duration or 0), #run.pulls,
     #run.pulls == 1 and "" or "s", when and ("  " .. when) or "")
 end
@@ -1819,10 +1861,12 @@ function Meter:FillKickable(rows, which, plain)
   -- party where one row drilled down fine and four were refused reports the
   -- refusal rather than the one row's happy answer.
   local RANK = { ["no-match"] = 1, ["empty"] = 2, ["no-count"] = 3, ["no-unit"] = 4,
-                 ["no-source"] = 5, ["no-spells"] = 6, ["no-session"] = 7,
-                 ["refused"] = 8, ["secret-guid"] = 9, ["no-metric"] = 10 }
+                 ["no-source"] = 5, ["no-rows"] = 6, ["no-spells"] = 7,
+                 ["no-session"] = 8, ["refused"] = 9, ["secret-guid"] = 10,
+                 ["no-metric"] = 11 }
   for _, row in ipairs(rows or {}) do
-    local value, by, stats, why = self:Kickable(which, row.unitGUID or row.guid)
+    local value, by, stats, why =
+      self:Kickable(which, row.unitGUID or row.guid, tonumber(row.taken))
     row.kick, row.kickableBy = stats, by
     row.kickable = stats and stats.damage or nil
     if why and (not worst or (RANK[why] or 0) > (RANK[worst] or 0)) then worst = why end
@@ -2130,6 +2174,39 @@ ns.On("CHALLENGE_MODE_RESET", function()
   Meter.pulls = {}; Meter.run = nil; Meter.baseline = nil
   Meter:Persist()
 end)
+
+-- The commonest end to a key is NOT an event. CHALLENGE_MODE_COMPLETED fires
+-- for one you time and CHALLENGE_MODE_RESET for one you reset at the stone, but
+-- a group that wipes and walks out -- MEASURED, 2026-10-04, Den of Nalorakk +10
+-- -- leaves the keystone simply not active any more, with the run still marked
+-- live in memory. It then stays the panel's "run" forever, and a login later
+-- tries to resume a key that is over.
+--
+-- Leaving the restricted map is also the moment the amounts go plain, so the
+-- harvest comes first and the archive waits for its retries: closing the run
+-- immediately would make the pull that finally arrives land on a nil run and be
+-- dropped, which is the one thing worth getting right here.
+function Meter:CloseAbandoned()
+  if not self.run or keyIsActive() then return false end
+  harvest(1)
+  local function finish()
+    if not Meter.run or keyIsActive() then return end
+    Meter:Archive()
+    Meter.pulls = {}; Meter.run = nil; Meter.baseline = nil
+    Meter:Persist()
+    if ns.Panel then ns.Panel:Refresh() end
+  end
+  if C_Timer and C_Timer.After then
+    C_Timer.After(HARVEST_TRIES * HARVEST_GAP + 0.25, finish)
+  else
+    finish()
+  end
+  return true
+end
+
+local function closeAbandoned() Meter:CloseAbandoned() end
+ns.On("ZONE_CHANGED_NEW_AREA", closeAbandoned)
+ns.On("PLAYER_ENTERING_WORLD", closeAbandoned)
 
 ns.On("PLAYER_REGEN_ENABLED", function() harvest(1) end)
 

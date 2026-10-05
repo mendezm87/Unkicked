@@ -778,6 +778,14 @@ do
   stub.fire("PLAYER_REGEN_ENABLED")
   eq(#ns.Meter.pulls, 1, "an empty segment is not recorded as a pull")
 
+  -- A spell list that ACCOUNTS FOR the damage the row shows: the drill-down
+  -- genuinely ran, found this player's spells, and none of them is kickable.
+  -- That is the only shape in which a 0 is a measurement -- an empty list
+  -- beside a row that took damage is a join that found nobody (R-44).
+  stub.meter.damageSpells = {
+    ["P-k"] = { { spellID = 9999999, totalAmount = 10 } },
+    ["P-s"] = { { spellID = 9999999, totalAmount = 10 } },
+  }
   stub.setMeter("current", {
     { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 3, taken = 10, deaths = 0 },
     { name = "Selfy",  class = "MAGE",  icon = 13, guid = "P-s", kicks = 1, taken = 10, deaths = 1, isYou = true },
@@ -796,6 +804,27 @@ do
   -- R-34. These pulls DID drill down (the stub serves a spell list), so 0 here
   -- is a measured zero and belongs on screen as one.
   eq(total and total.kickable, 0, "a drill-down that ran and matched nothing is a real 0")
+
+  -- R-44, MEASURED 2026-10-04 (Den of Nalorakk +10): the same empty list beside
+  -- a row that DID take damage is not a zero, it is a drill-down that found
+  -- nobody. Four of five rows rendered `0` interruptible spells for a party the
+  -- log proves all ate the same kickable cast.
+  stub.meter.damageSpells = {}
+  local v, _, st, why = ns.Meter:Kickable("current", "P-k", 10)
+  eq(v, nil, "an empty spell list beside a row that took damage is not a zero")
+  eq(st, nil, "and no stats table is produced for it")
+  eq(why, "no-rows", "the reason says the drill-down found nothing for that player")
+  ok((ns.Meter.noRows or 0) > 0, "and it is counted for /uk audit")
+  local v0 = ns.Meter:Kickable("current", "P-k", 0)
+  eq(v0, 0, "while a row that took nothing keeps its measured zero")
+  stub.meter.damageSpells = {
+    ["P-k"] = { { spellID = 9999999, totalAmount = 4 } },
+  }
+  ns.Meter.spellTotalDrift = 0
+  ns.Meter:Kickable("current", "P-k", 10)
+  eq(ns.Meter.spellTotalDrift, 1,
+    "a per-spell list that does not add up to its row is counted as drift")
+  stub.meter.damageSpells = {}
 
   -- But a pull where the drill-down never ran -- the 12.x case, where the guid
   -- comes back secret -- must not be summed into that same 0. It used to be,
@@ -1055,6 +1084,14 @@ do
     { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 4, taken = 100, deaths = 0 },
     { name = "Selfy",  class = "MAGE",  icon = 13, guid = "P-s", kicks = 0, taken = 900, deaths = 1, isYou = true },
   })
+  -- Lists that account for each row's damage, so the 0 below is measured (R-44).
+  stub.meter.damageSpells = {
+    ["P-k"] = { { spellID = 9999999, totalAmount = 100 } },
+    -- The local player resolves through UnitGUID("player"), not through the
+    -- row's own identifier -- the same split that left four of five rows
+    -- unresolved on the real key.
+    [ns.GUID("player")] = { { spellID = 9999999, totalAmount = 900 } },
+  }
   assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
   assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
   stub.fire("PLAYER_LOGIN")
@@ -1076,6 +1113,23 @@ do
     "a drill-down that ran and matched nothing renders 0, not blank")
   ok(f.footer:GetText():find("proven interruptible", 1, true) ~= nil,
     "and the footer says what the column is counting")
+
+  -- R-44 on screen: take the lists away and the same rows, still showing damage
+  -- taken, must go blank with the reason rather than reading as five zeroes.
+  stub.meter.damageSpells = {}
+  ns.Panel:Refresh()
+  eq(ns.Panel.rows[1].c5:GetText(), "",
+    "a drill-down that found nothing for a player who took damage renders blank")
+  ok(f.footer:GetText():find("took damage", 1, true) ~= nil,
+    "and the footer says the drill-down found nothing, not that nothing hit them")
+  stub.meter.damageSpells = {
+    ["P-k"] = { { spellID = 9999999, totalAmount = 100 } },
+    -- The local player resolves through UnitGUID("player"), not through the
+    -- row's own identifier -- the same split that left four of five rows
+    -- unresolved on the real key.
+    [ns.GUID("player")] = { { spellID = 9999999, totalAmount = 900 } },
+  }
+  ns.Panel:Refresh()
 
   -- The other half: a column with no figure at all must say WHY rather than
   -- reading as a measured zero. "casts" is the honest case -- this client's
@@ -1793,6 +1847,49 @@ do
       "which the dropdown says")
     ok(not ns.Meter:RunLabel(timed):find("abandoned", 1, true),
       "and does not say of the key that counted")
+end
+
+print("\n[meter] a key you walk out of is closed, not left running")
+do
+  -- MEASURED, 2026-10-04 (Den of Nalorakk +10): the group wiped and left. There
+  -- is no event for that -- COMPLETED is for a key you time and RESET is for one
+  -- you reset at the stone -- so the run stayed live in memory, kept being the
+  -- panel's "run", and a login later would have tried to resume it.
+  loadAddon(false)
+  stub.fire("PLAYER_LOGIN")
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.damageSpells = {}
+  stub.challenge = { active = true, level = 10, mapID = 586, mapName = "Den of Nalorakk", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 2, taken = 0, deaths = 0 },
+  })
+  stub.fire("PLAYER_REGEN_ENABLED")
+  eq(#ns.Meter.pulls, 1, "a pull is harvested inside the key")
+
+  -- Still in the key: zoning around inside a dungeon must not end it.
+  stub.fire("ZONE_CHANGED_NEW_AREA")
+  ok(ns.Meter.run ~= nil, "a zone change while the keystone is live leaves the run alone")
+
+  -- Now the keystone is gone and so are we.
+  stub.challenge = { active = false, level = nil, mapID = nil, mapName = nil, deaths = 0 }
+  stub.setMeter("current", {
+    { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k", kicks = 5, taken = 0, deaths = 0 },
+  })
+  stub.fire("ZONE_CHANGED_NEW_AREA")
+  eq(ns.Meter.run, nil, "leaving an unfinished key closes the run")
+  local stored = ns.Meter.history and ns.Meter.history[1]
+  ok(stored ~= nil, "and archives it rather than discarding the packs that happened")
+  ok(stored and stored.open, "marked not completed")
+  ok(stored and ns.Meter:RunLabel(stored):find("(abandoned)", 1, true) ~= nil,
+    "so the dropdown tells it apart from a key that timed")
+  -- The harvest comes first: leaving the restricted map is also the moment the
+  -- amounts go plain, so the last pull must land BEFORE the run is closed.
+  local kicks = 0
+  for _, pull in ipairs(stored and stored.pulls or {}) do kicks = kicks + (pull.kicks or 0) end
+  eq(kicks, 5, "with everything readable on the way out harvested into it")
+  eq(#ns.Meter.pulls, 0, "and nothing left in memory to attach to the next key")
 end
 
 print("\n[meter] the audit takes itself at the end of a key, and survives the logout")
