@@ -247,6 +247,40 @@ The **`audit`** button in the panel's title bar opens it in a selectable box, be
 a screenshot of the chat frame cuts off the ends of exactly the lines that matter.
 `/uk audit off` stops the automatic capture.
 
+### The harvest trace
+
+The audit also carries a **harvest trace** — one line per harvest, showing what the
+client handed over against what was actually recorded:
+
+```
+== harvest trace -- what the client handed over vs what was recorded
+    #   why              sess  rows  secs   read k/d/dmg      baseline          recorded
+    1   first            42    5     120    6/0/2.4m          --                6/0/2.4m
+    2   delta            42    5     1360   62/9/302.4m       6/0/2.4m          56/9/300.0m
+    3   blocked x8       42    -     -      --                --                --
+    4   restart+appended 43    5     30     3/0/50k           62/9/302.4m       3/0/50k
+```
+
+It exists because the panel's run total has been reading about **30%** of the key on
+damage and **1.6%** of it on kicks (Altar of Fangs +17: 1 kick of 62, 89.3m of
+302.4m). Three mechanisms can do that, and the counters say which rule fired without
+saying what the numbers going into it were. The three columns tell them apart:
+
+- a small **read** means the client never had the key in it, and nothing in the addon
+  can recover it;
+- a large **read** with a small **recorded** means the subtraction ate it, and
+  **baseline** says against what;
+- a **sess** id that *changes* between two lines means the client opened a fresh
+  session mid-key — the third candidate, and invisible in every other number stored.
+
+Consecutive refusals collapse into one counted entry (`blocked x8`): the Altar key
+produced 239 of them against 17 pulls, which one-per-entry would have used the whole
+trace up on failures that are already counted elsewhere. It is written to
+`UnkickedDB.trace` as it happens, under the same two rules as a stored pull — nothing
+secret reaches the file, and an unknown schema version is dropped whole — so it
+survives the logout. `/uk audit trace` prints it on its own, mid-key included; it is
+cleared by `/uk audit forget` and when a new key starts.
+
 **How many casts went unkicked is still the parser's answer.** The panel can only
 report what landed; which casts got through needs `WoWCombatLog.txt`.
 
@@ -501,6 +535,7 @@ prints exactly which parts of the old design the client still refuses.
 | `/uk audit` | dump the raw metric rows, and whether a spell row carries a cast count |
 | `/uk audit last` | print the audit that was taken by itself at the end of the last key |
 | `/uk audit copy` | open the copy box — same as the panel's **audit** button |
+| `/uk audit trace` | print the harvest trace alone: read vs baseline vs recorded, per harvest |
 | `/uk audit on` / `off` | take one automatically at the end of a key, or stop |
 | `/uk audit forget` | discard the stored audits |
 | `/uk pulls` | toggle the one-line chat report after each pull |

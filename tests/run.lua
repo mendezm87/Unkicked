@@ -2043,6 +2043,146 @@ do
   stub.restricted = false
 end
 
+print("\n[meter] every harvest records what it read, not only what it kept")
+do
+  -- The run-total shortfall (R-45) is the reason this exists: on the Altar of
+  -- Fangs +17 the panel kept 1 kick of 62 and 89.3m of 302.4m. Three mechanisms
+  -- could do that and the counters could not tell them apart, so the trace
+  -- stores the raw read, the baseline and the recorded delta side by side.
+  local function relog(keepDB)
+    loadAddon(keepDB)
+    assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+    assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
+    stub.fire("PLAYER_LOGIN")
+  end
+
+  local function harvested(kicks, taken, deaths, duration)
+    stub.setMeter("current", {
+      { name = "Kicker", class = "ROGUE", icon = 12, guid = "P-k",
+        kicks = kicks, taken = taken, deaths = deaths },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.meter.secretGuids = false
+  stub.restricted = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 17, mapID = 502, mapName = "Altar of Fangs", deaths = 0 }
+  relog(false)
+
+  stub.fire("CHALLENGE_MODE_START")
+  eq(#ns.Meter.trace, 0, "a new key starts a new trace -- it describes harvests into THIS key")
+
+  harvested(6, 400, 0, 120)
+  local t = ns.Meter.trace
+  eq(#t, 1, "the first harvest is traced")
+  eq(t[1].why, "first", "taken whole because there was no baseline to difference against")
+  eq(t[1].base, nil, "so there is no baseline recorded beside it")
+  eq(t[1].snap.kicks, 6, "the raw read is kept")
+  eq(t[1].got.kicks, 6, "and equals the delta, which is the point of saying 'first'")
+
+  -- The one line that would have settled the shortfall in a single key: a large
+  -- read beside a small recorded delta, with the baseline that ate the rest.
+  harvested(62, 302400000, 9, 1360)
+  t = ns.Meter.trace
+  eq(#t, 2, "the second harvest is traced too")
+  eq(t[2].why, "delta", "differenced, the ordinary case")
+  eq(t[2].snap.kicks, 62, "what the client handed over")
+  eq(t[2].base.kicks, 6, "the baseline it was differenced against")
+  eq(t[2].got.kicks, 56, "and the delta actually recorded -- all three, not just the last")
+  eq(t[2].snap.taken, 302400000, "damage read")
+  eq(t[2].got.taken, 302400000 - 400,
+    "damage recorded, so a subtraction that ate a key is visible as a difference")
+  eq(t[2].rows, 1, "with the row count, which separates 'no rows' from 'small numbers'")
+  eq(t[2].drift, nil, "and no join drift, because the rows matched")
+
+  -- A refusal is where the key goes missing without any rule firing, so it is
+  -- traced as well as counted -- but 239 of them against 17 pulls would push
+  -- every readable harvest out of the trace, so consecutive ones collapse.
+  stub.meter.secret = true
+  stub.fire("PLAYER_REGEN_ENABLED")
+  stub.fire("PLAYER_REGEN_ENABLED")
+  t = ns.Meter.trace
+  eq(#t, 3, "refusals collapse into one entry rather than flooding the trace")
+  eq(t[3].why, "blocked", "named for what it was")
+  ok((t[3].n or 1) > 2, ("and counted (%d), including the retries"):format(t[3].n or 1))
+  eq(t[3].snap, nil, "with nothing read, because nothing was readable")
+
+  -- A session that went backwards is the third candidate, and it is the one
+  -- that is invisible in every other number stored.
+  stub.meter.secret = false
+  harvested(3, 50, 0, 30)
+  t = ns.Meter.trace
+  -- "+appended" because this fresh session holds LESS than the pulls in hand,
+  -- so it is new combat rather than the same fight read again. The two halves
+  -- of that decision are the ones the supersede rule turns on.
+  eq(t[#t].why, "restart+appended",
+    "a session that went backwards is traced as a restart, and as appended rather than superseding")
+  eq(t[#t].base.kicks, 62, "with the larger baseline it could not be differenced against")
+
+  -- It reaches the file as it happens: the harvest worth seeing the inside of
+  -- is the one before a disconnect.
+  local stored = UnkickedDB.trace
+  ok(type(stored) == "table", "the trace reaches SavedVariables without waiting for logout")
+  eq(stored.version, 1, "under its own schema version")
+  eq(#stored.entries, #t, "with every entry")
+
+  local bad = {}
+  local function walk(tbl, path)
+    for k, v in pairs(tbl) do
+      local at = path .. "." .. tostring(k)
+      if issecretvalue(v) then bad[#bad + 1] = at .. " (secret)"
+      elseif type(v) == "table" then walk(v, at)
+      elseif type(v) ~= "number" and type(v) ~= "string" and type(v) ~= "boolean" then
+        bad[#bad + 1] = ("%s (%s)"):format(at, type(v))
+      end
+    end
+  end
+  walk(stored, "trace")
+  eq(#bad, 0, "and nothing in it is a secret or an unserialisable type  " .. table.concat(bad, ", "))
+
+  -- The boundary forced, the same way the pulls are: a secret that reached a
+  -- trace entry must be DROPPED, never written as the number inside it.
+  ns.Meter.trace[1].snap.taken = stub.secret(999)
+  ns.Meter.trace[1].why = stub.secret("leak")
+  ns.Meter:PersistTrace()
+  eq(UnkickedDB.trace.entries[1].snap.taken, 0, "a secret amount is not written as a number")
+  eq(UnkickedDB.trace.entries[1].why, "?", "and a secret label is not written as a string")
+
+  -- It is the audit that leaves the client, so the trace has to be in it.
+  local lines = ns.Meter:Audit({ quiet = true })
+  local sawHeader, sawEntry = false, false
+  for _, l in ipairs(lines) do
+    if l:find("harvest trace", 1, true) then sawHeader = true end
+    if l:find("restart", 1, true) then sawEntry = true end
+  end
+  ok(sawHeader, "the audit carries the harvest trace")
+  ok(sawEntry, "including the entries, which is what gets pasted out of the game")
+
+  -- The rendering is the deliverable here: this gets screenshotted or pasted,
+  -- and a column that silently prints "-" for every entry taken this session
+  -- is the failure that would make the whole trace look empty.
+  local rendered
+  for _, l in ipairs(ns.Meter:TraceLines()) do
+    if l:find("delta", 1, true) then rendered = l end
+  end
+  ok(rendered and rendered:find("1360", 1, true), "the rendered line carries the session clock")
+  ok(rendered and rendered:find("302.4m", 1, true),
+    "and the amounts read, so a screenshot of it is enough to act on")
+
+  -- And it survives the logout that destroys the sessions it describes.
+  stub.challenge.active = true
+  relog(true)
+  local back = ns.Meter:StoredTrace()
+  ok(#back > 0, ("the trace comes back after a relog (%d entries)"):format(#back))
+  eq(back[#back].why, "restart+appended", "with the labels intact")
+  local after = ns.Meter:TraceLines()
+  ok(#after > 1, "and TraceLines falls back to the file when this session has harvested nothing")
+end
+
 print("\n[meter] the end-of-key harvest never counts the key twice")
 do
   -- MEASURED, 2026-10-03, Altar of Fangs +12. 17 pulls were harvested inside the

@@ -1037,6 +1037,12 @@ function Meter:Audit(opts)
   head("per-spell lists disagreeing with the row they were fetched for: %d (0 is correct)",
     self.spellTotalDrift or 0)
 
+  -- The counters above say which rule fired. This says what the numbers were
+  -- when it fired, which is the difference between narrowing the run-total
+  -- shortfall and arguing about it for another key.
+  head("harvest trace -- what the client handed over vs what was recorded")
+  for _, l in ipairs(self:TraceLines()) do emit(l) end
+
   -- The question this answers: the documented DamageMeterCombatSpell has no
   -- count field of any kind, so "show casts instead of damage" has no source in
   -- the API. The struct page is not the client, though, so dump what a real
@@ -1380,7 +1386,9 @@ end
 --      audit is a diagnosis of the wrong client.
 local AUDIT_VERSION = 1
 local MAX_AUDITS = 4         -- entries kept across logins
-local MAX_AUDIT_LINES = 160
+-- Room for the harvest trace underneath the field dumps: 40 traced harvests
+-- plus a header on top of the ~45 lines the rest of the audit prints.
+local MAX_AUDIT_LINES = 240
 local AUDIT_LINE = 240
 
 local function auditOut(lines)
@@ -1459,9 +1467,144 @@ end
 
 function Meter:ForgetAudits()
   local n = #self:StoredAudits()
-  if ns.db then ns.db.audit = nil end
+  if ns.db then ns.db.audit = nil; ns.db.trace = nil end
   self.lastAudit = nil
+  self.trace = {}
   return n
+end
+
+-- ---------------------------------------------------------- the harvest trace
+-- MEASURED, 2026-10-03 and 2026-10-04: the panel's run total reads about 30% of
+-- the key on damage but 1.6% of it on kicks -- Altar of Fangs +17 came back as
+-- 1 kick of 62 and 89.3m of 302.4m, over 7 of the 8 pulls the log segments.
+-- Two metrics failing at wildly different rates cannot come from one blanket
+-- failure to harvest, and the counters already here (blockedHarvests,
+-- superseded, joinDrift) say WHICH rule fired without ever saying what the
+-- numbers going into it were.
+--
+-- So every harvest now records the three figures that tell the candidates
+-- apart, with no interpretation applied:
+--   snap  -- what the client handed over, before any subtraction
+--   base  -- the baseline it was differenced against (nil on the first)
+--   got   -- the delta that was actually recorded as the pull
+-- A small `snap` means the client never had the key in it and nothing we do
+-- here can recover it. A large `snap` with a small `got` means the subtraction
+-- ate it, and `base` says against what. A session id that CHANGES between two
+-- entries means the client opened a fresh session mid-key, which is the third
+-- candidate and is invisible in every number we store today.
+local TRACE_VERSION = 1
+local MAX_TRACE = 40
+Meter.trace = {}
+
+local function totalsOut(t)
+  if type(t) ~= "table" then return nil end
+  return { kicks = numOut(t.kicks) or 0, deaths = numOut(t.deaths) or 0,
+           taken = numOut(t.taken) or 0, dur = numOut(t.duration or t.dur) }
+end
+
+-- A session id is a number on this client but the field is undocumented, so
+-- either scalar survives and anything else is dropped.
+local function idOut(v)
+  local n = numOut(v)
+  if n ~= nil then return n end
+  return strOut(v)
+end
+
+local function traceOut(e)
+  return {
+    at = numOut(e.at) or 0, why = strOut(e.why) or "?",
+    n = numOut(e.n), rows = numOut(e.rows),
+    sid = idOut(e.sid), sessions = numOut(e.sessions), drift = numOut(e.drift),
+    snap = totalsOut(e.snap), base = totalsOut(e.base), got = totalsOut(e.got),
+  }
+end
+
+function Meter:PersistTrace()
+  if not ns.db then return nil end
+  local out = { version = TRACE_VERSION, entries = {} }
+  for i = math.max(1, #self.trace - MAX_TRACE + 1), #self.trace do
+    out.entries[#out.entries + 1] = traceOut(self.trace[i])
+  end
+  ns.db.trace = out
+  return out
+end
+
+function Meter:StoredTrace()
+  local st = ns.db and ns.db.trace
+  if type(st) ~= "table" or st.version ~= TRACE_VERSION then return {} end
+  local out = {}
+  for _, e in ipairs(st.entries or {}) do
+    if type(e) == "table" then
+      local rec = traceOut(e)
+      rec.stored = true
+      out[#out + 1] = rec
+    end
+  end
+  return out
+end
+
+-- Written as it happens, for the same reason a pull is: the harvest we most
+-- need to see the inside of is the one before a disconnect.
+--
+-- Consecutive refusals COLLAPSE into one entry with a count. On the Altar key
+-- there were 239 of them against 17 pulls, so one entry each would have pushed
+-- every readable harvest out of a 40-deep trace and left the diagnostic
+-- carrying only the failures it already counts elsewhere.
+function Meter:Trace(e)
+  e.at = epoch()
+  local last = self.trace[#self.trace]
+  if e.why == "blocked" and last and last.why == "blocked" then
+    last.n, last.at, last.sid = (last.n or 1) + 1, e.at, e.sid
+  else
+    self.trace[#self.trace + 1] = e
+    while #self.trace > MAX_TRACE do table.remove(self.trace, 1) end
+  end
+  self:PersistTrace()
+  return e
+end
+
+-- The trace as pasteable lines. Prefers what this session recorded and falls
+-- back to the file, so the answer survives the logout that discards the
+-- sessions it describes.
+function Meter:TraceLines()
+  local list = #self.trace > 0 and self.trace or self:StoredTrace()
+  local out = {}
+  if #list == 0 then
+    out[1] = "    no harvests recorded yet"
+    return out
+  end
+  -- Every field goes through numOut/strOut on the way OUT as well as in. A
+  -- trace entry should never hold a secret -- Snapshot only ever returns plain
+  -- values -- but this text is built inside the audit, and formatting a secret
+  -- raises rather than printing wrong, which would take the whole audit down
+  -- with it at exactly the moment it is needed.
+  local function n(v) return numOut(v) or 0 end
+  local function f(t)
+    if type(t) ~= "table" then return "--" end
+    return ("%d/%d/%s"):format(n(t.kicks), n(t.deaths), ns.Short(n(t.taken)))
+  end
+  -- A live entry carries the snapshot itself, where the field is `duration`;
+  -- one read back from the file carries the stored `dur`. Both, or the column
+  -- is empty for exactly the entries taken this session.
+  local function clock(t)
+    if type(t) ~= "table" then return "-" end
+    local v = numOut(t.dur) or numOut(t.duration)
+    if v == nil then return "-" end
+    return ("%d"):format(v)
+  end
+  out[#out + 1] =
+    "    #   why              sess  rows  secs   read k/d/dmg      baseline          recorded"
+  for i, e in ipairs(list) do
+    out[#out + 1] = ("    %-3d %-16s %-5s %-5s %-6s %-17s %-17s %s%s%s"):format(
+      i,
+      (numOut(e.n) or 1) > 1 and ("%s x%d"):format(strOut(e.why) or "?", n(e.n))
+        or (strOut(e.why) or "?"),
+      tostring(idOut(e.sid) or "-"), tostring(numOut(e.rows) or "-"), clock(e.snap),
+      f(e.snap), f(e.base), f(e.got),
+      (numOut(e.sessions) or 0) > 1 and (" sessions=" .. n(e.sessions)) or "",
+      (numOut(e.drift) or 0) ~= 0 and (" drift=" .. n(e.drift)) or "")
+  end
+  return out
 end
 
 -- ------------------------------------------------------------------- clearing
@@ -1992,18 +2135,37 @@ local function harvest(try)
   local snap = Meter:Snapshot("current")
   if not snap then
     Meter.blockedHarvests = (Meter.blockedHarvests or 0) + 1
+    -- Recorded as well as counted: a refusal that sits between two readable
+    -- harvests is combat the delta below will attribute to whichever of them
+    -- came second, and the count alone cannot say where in the key it was.
+    Meter:Trace({ why = "blocked", sid = newestSessionID(), sessions = #sessionList() })
     if try < HARVEST_TRIES and C_Timer and C_Timer.After then
       C_Timer.After(HARVEST_GAP, function() harvest(try + 1) end)
     end
     return
   end
 
-  local pull = diffSnapshot(snap, Meter.baseline)
+  local base = Meter.baseline
+  local pull = diffSnapshot(snap, base)
   Meter.baseline = snap
+
+  -- Deliberately NOT a summary of what happened: the raw read, the baseline and
+  -- the recorded delta, so the next key says which of the three candidates for
+  -- the shortfall is real instead of needing to be reasoned about again.
+  local function trace(why)
+    Meter:Trace({ why = why, sid = newestSessionID(), sessions = #sessionList(),
+      rows = #(snap.rows or {}), snap = snap, base = base, got = pull,
+      drift = pull.joinDrift })
+  end
 
   -- A pull nobody did anything in is not a pull. Keeps the numbering stable
   -- enough to say out loud, the same rule the offline parser uses.
-  if pull.kicks == 0 and pull.taken == 0 and pull.deaths == 0 then return end
+  if pull.kicks == 0 and pull.taken == 0 and pull.deaths == 0 then
+    -- Still traced. An empty delta ADVANCES the baseline, so a run of these
+    -- beside a key that plainly had combat in it is itself the finding.
+    trace("empty")
+    return
+  end
 
   -- A snapshot taken WHOLE (diffSnapshot could not difference it -- no baseline,
   -- or the session went backwards and is a different one) re-covers ground the
@@ -2016,6 +2178,10 @@ local function harvest(try)
   -- superseded pulls are not deleted silently -- the surviving pull says it is
   -- the whole run, which is what the dropdown labels "whole key".
   local taken = (pull == snap)
+  -- first    -- taken whole because there was no baseline yet
+  -- restart  -- taken whole because the session went BACKWARDS (a new session)
+  -- delta    -- differenced against the baseline, the ordinary case
+  local why = taken and (base and "restart" or "first") or "delta"
   if taken and #Meter.pulls > 0 then
     local had = { kicks = 0, taken = 0, deaths = 0 }
     for _, p in ipairs(Meter.pulls) do
@@ -2026,6 +2192,9 @@ local function harvest(try)
       Meter.superseded = (Meter.superseded or 0) + #Meter.pulls
       Meter.pulls = {}
       pull.wholeRun = true
+      why = "superseded"
+    else
+      why = why .. "+appended"
     end
   end
 
@@ -2035,6 +2204,7 @@ local function harvest(try)
     pull.wholeRun = (taken and Meter.run.endedAt ~= nil) or nil
   end
   Meter.pulls[pull.index] = pull
+  trace(why)
 
   -- Written the moment it exists, not at logout: the report of a key you just
   -- finished should survive a crash, a disconnect, or an alt-F4 as well as it
@@ -2138,6 +2308,10 @@ local function startRun()
   Meter:Archive()
   Meter.pulls = {}
   Meter.baseline = nil
+  -- The trace describes harvests into the key that just ended. Kept in the
+  -- file until the next harvest overwrites it, so the audit taken at the end of
+  -- an abandoned key still has it, but not carried into the new key's reading.
+  Meter.trace = {}
   Meter.run = { level = level, mapName = mapName or (GetInstanceInfo and GetInstanceInfo()) or nil,
                 startedAt = GetTime(), at = epoch() }
   Meter:Persist()

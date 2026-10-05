@@ -30,7 +30,7 @@ local function usage()
   print("  /uk why        why the addon reports nothing on this client")
   print("  /uk audit      dump what C_DamageMeter returns on this client")
   print("  |cff808080               -- taken automatically when a key completes|r")
-  print("  /uk audit last|copy|on|off|forget   read, copy or stop the stored one")
+  print("  /uk audit last|copy|trace|on|off|forget   read, copy or stop the stored one")
 end
 
 SlashCmdList.UNKICKED = function(msg)
@@ -212,6 +212,12 @@ SlashCmdList.UNKICKED = function(msg)
           end
         end
       end
+    elseif arg == "trace" then
+      -- The one section worth reading on its own: it is short, it is the thing
+      -- the run-total shortfall turns on, and it is readable mid-key rather
+      -- than only after the automatic capture.
+      ns.Print("harvest trace -- read k/d/dmg, the baseline it was differenced against, the delta recorded")
+      for _, line in ipairs(ns.Meter:TraceLines()) do print(line) end
     elseif arg == "copy" then
       ns.Panel:AuditBox(true)
     elseif arg == "off" then
