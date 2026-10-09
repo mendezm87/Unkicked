@@ -763,5 +763,34 @@ do
   has(run("--sort casts --asc"), "casts asc", "--asc reaches it too")
 end
 
+print("\n[knowledge] a name the current log cannot re-derive is kept")
+do
+  -- A spell's NAME is only learnable from a log that actually contains the
+  -- cast, so a spell proved on an EARLIER log has no name in this run. The
+  -- rewrite dropped the comment it was already carrying -- `[1241214] = true,
+  -- -- Earth Bolt` came back bare -- which is churn in a file whose whole job
+  -- is to be readable by a person.
+  local K = dofile("parser/knowledge.lua")
+  local learned = os.tmpname()
+  local export = os.tmpname()
+
+  local f = io.open(learned, "w")
+  f:write("return {\n  [1241214] = true,  -- Earth Bolt\n  [999001] = false,\n}\n")
+  f:close()
+
+  local k = K.load(learned, export)
+  eq(k.names and k.names[1241214], "Earth Bolt",
+    "the name is read back out of the file, the only place it still exists")
+  k:observe(999002, "Doom Bolt")
+  k:save()
+
+  local text = io.open(learned):read("*a")
+  has(text, "-- Earth Bolt", "and survives a rewrite that re-derived nothing")
+  has(text, "-- Doom Bolt", "beside the one this run did learn")
+  has(io.open(export):read("*a"), "-- Earth Bolt", "in the addon mirror too")
+
+  os.remove(learned); os.remove(export)
+end
+
 print(("\n%d passed, %d failed"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

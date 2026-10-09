@@ -30,9 +30,9 @@ return {
   [1238063] = true,
   [1238232] = true,
   [1238294] = true,
-  [1239394] = true,
+  [1239394] = true,  -- Scavenge
   [1239821] = true,
-  [1241214] = true,
+  [1241214] = true,  -- Earth Bolt
   [1247669] = true,
   [1249621] = true,
   [1257877] = true,  -- Scathing Review
@@ -46,7 +46,7 @@ return {
   [1294815] = true,
   [1294972] = true,
   [1295125] = true,
-  [1297696] = true,
+  [1297696] = true,  -- Healing Breeze
   [1298899] = true,
   [1299938] = true,
   [1301834] = true,

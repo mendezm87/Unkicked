@@ -43,6 +43,21 @@ function M.load(path, exportPath)
       end
     end
   end
+  -- The NAME is only learnable from a log that actually contains the cast, so a
+  -- spell proved on an earlier log has no name in this run and the rewrite
+  -- dropped the `-- Earth Bolt` comment it was already carrying. The file is
+  -- its own record of those: read the trailing comments back as text, which is
+  -- the only place that name still exists. Names are never knowledge -- they
+  -- annotate ids and nothing reads them but a person.
+  local fh = io.open(path, "r")
+  if fh then
+    self.names = self.names or {}
+    for line in fh:lines() do
+      local id, name = line:match("^%s*%[(%d+)%]%s*=%s*%a+,%s*%-%-%s*(.-)%s*$")
+      if id and name ~= "" then self.names[tonumber(id)] = name end
+    end
+    fh:close()
+  end
   return self
 end
 
