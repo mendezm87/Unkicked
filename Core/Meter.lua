@@ -764,6 +764,34 @@ function Meter.AddStats(into, add)
 end
 local addStats = Meter.AddStats
 
+-- The OTHER way to combine two stat tables: not "these are two different
+-- fights, add them" but "these are two readings of the SAME fight, each of
+-- which may have missed something -- take whichever saw more". Same absent-is-
+-- not-zero rule: a field neither side measured stays absent.
+function Meter.MaxStats(into, add)
+  if not add then return into end
+  into = into or {}
+  for _, f in ipairs(STAT_FIELDS) do
+    if add[f] ~= nil then
+      into[f] = (into[f] == nil) and add[f] or math.max(into[f], add[f])
+    end
+  end
+  return into
+end
+local maxStats = Meter.MaxStats
+
+-- Every key a row can be matched on, most stable first. A plain sourceGUID
+-- means the same thing inside and outside the restriction; a name does not
+-- exist inside it. Defined here rather than beside diffSnapshot because the
+-- run total has to make the same join (R-47).
+local function keysOf(r)
+  local k = {}
+  if r.guid ~= nil then k[#k + 1] = "g:" .. tostring(r.guid) end
+  if r.identity then k[#k + 1] = "i:" .. r.identity end
+  if r.name then k[#k + 1] = "n:" .. r.name end
+  return k
+end
+
 -- The figure this row should show for the column's current mode, or nil when
 -- that mode has no answer for it. Rows stored by an older build carry only the
 -- damage figure, so that one still resolves from the legacy field.
@@ -891,9 +919,85 @@ Meter.KICKABLE_WHY = {
 -- TotalOf, not Total: the same arithmetic has to serve a run restored from
 -- SavedVariables (R-37) as serves the one in memory, and a stored run's pulls
 -- are plain by construction exactly as a freshly harvested one's are.
-function Meter:TotalOf(pulls)
+-- Two measurements of ONE finished key, reconciled: the pulls harvested as it
+-- was played, and the single whole-session read the client finally hands over
+-- once the key is over.
+--
+-- MEASURED, 2026-10-09, Temple of Sethraliss +14. The log says 47 interrupts
+-- (Shacuna 16, Jakkyboi 15, Acindis 9, Maki 7) and Blizzard's own meter window
+-- agrees to the unit. The 18 harvested pulls summed to 41 -- short, because one
+-- cross-session subtraction ate a pull. The post-key read held 46 -- short a
+-- different way. The panel showed 87: the two were ADDED.
+--
+-- Neither is the truth and both are LOWER BOUNDS on it, each missing something
+-- the other saw, so the reconciliation is the per-row maximum rather than the
+-- sum or a choice between them. On this key that lands on 16/15/9/7 -- exactly
+-- the log, on every player.
+--
+-- It also removes the judgement call that caused the bug. The old rule asked
+-- whether the whole-key read dominated the pulls on kicks AND damage AND
+-- deaths, and discarded the pulls if so; here it held MORE kicks and damage but
+-- FEWER deaths (1 against 4, because the session it came out of carried one
+-- death row), so one metric regressing vetoed the whole thing and the read was
+-- appended instead. A maximum needs no such test: it can neither double-count
+-- nor discard, whatever the read turns out to hold.
+local function reconcile(total, whole)
+  if not whole or not whole.rows then return total end
+  local byKey = {}
+  local function index(acc)
+    for _, k in ipairs(keysOf(acc)) do if byKey[k] == nil then byKey[k] = acc end end
+  end
+  for _, acc in ipairs(total.rows) do index(acc) end
+
+  for _, r in ipairs(whole.rows) do
+    local acc
+    for _, k in ipairs(keysOf(r)) do
+      if byKey[k] then acc = byKey[k]; break end
+    end
+    -- A player the pulls never saw at all -- every harvest they were in was
+    -- refused. The read is all we have of them, so it stands on its own.
+    if not acc then
+      acc = { name = r.name, class = r.class, isYou = r.isYou,
+              identity = r.identity, guid = r.guid,
+              kicks = 0, taken = 0, deaths = 0 }
+      total.rows[#total.rows + 1] = acc
+      index(acc)
+    end
+    acc.kicks = math.max(acc.kicks, r.kicks or 0)
+    acc.taken = math.max(acc.taken, r.taken or 0)
+    acc.deaths = math.max(acc.deaths, r.deaths or 0)
+    -- Absent is not zero, on this path too: a read that never got a kickable
+    -- figure must not pull a measured one down to 0.
+    if r.kickable then acc.kickable = math.max(acc.kickable or 0, r.kickable) end
+    if r.kick then acc.kick = maxStats(acc.kick, r.kick) end
+  end
+
+  total.kicks, total.deaths, total.taken = 0, 0, 0
+  total.kickable, total.kick = nil, nil
+  for _, acc in ipairs(total.rows) do
+    total.kicks = total.kicks + acc.kicks
+    total.deaths = total.deaths + acc.deaths
+    total.taken = total.taken + acc.taken
+    if acc.kickable then total.kickable = (total.kickable or 0) + acc.kickable end
+    if acc.kick then total.kick = addStats(total.kick, acc.kick) end
+  end
+  -- Same rule for the clock: the pulls cover only the packs, the whole-key read
+  -- covers the key. Whichever saw more time saw more of it.
+  total.duration = math.max(total.duration or 0, whole.duration or 0)
+  total.reconciled = true
+  return total
+end
+
+function Meter:TotalOf(pulls, whole)
   pulls = pulls or {}
-  if #pulls == 0 then return nil end
+  if #pulls == 0 then
+    -- The pulls can be empty while a whole-key read is not: every harvest
+    -- during the key was refused and only the post-key one landed.
+    if whole and whole.rows and #whole.rows > 0 then
+      return self:TotalOf({ whole })
+    end
+    return nil
+  end
   local byKey, order = {}, {}
   -- kickable starts nil, NOT 0. A hard zero is a claim that nothing the party
   -- ate was interruptible; nil is "we never got a figure". The per-spell
@@ -911,6 +1015,9 @@ function Meter:TotalOf(pulls)
       local acc = byKey[key]
       if not acc then
         acc = { name = r.name, class = r.class, isYou = r.isYou,
+                -- Carried so reconcile() can join the whole-key read onto this
+                -- row by the same most-stable-first keys the differencing uses.
+                identity = r.identity, guid = r.guid,
                 kicks = 0, taken = 0, deaths = 0, kickable = nil, kick = nil }
         byKey[key] = acc
         order[#order + 1] = acc
@@ -931,6 +1038,9 @@ function Meter:TotalOf(pulls)
     if acc.kick then total.kick = addStats(total.kick, acc.kick) end
     total.rows[#total.rows + 1] = acc
   end
+
+  reconcile(total, whole)
+
   -- Most kicks first. Legal here and only here: a snapshot is plain by
   -- construction, so these numbers can actually be compared.
   table.sort(total.rows, function(a, b)
@@ -940,7 +1050,10 @@ function Meter:TotalOf(pulls)
   return total
 end
 
-function Meter:Total() return self:TotalOf(self.pulls) end
+-- The whole-key read is held BESIDE the pulls, never in them -- see reconcile().
+Meter.wholeKey = nil
+
+function Meter:Total() return self:TotalOf(self.pulls, self.wholeKey) end
 
 -- The client's own death counter for the key, which counts deaths we were never
 -- told about by any metric. Reported beside ours rather than instead of it: a
@@ -1034,8 +1147,8 @@ function Meter:Audit(opts)
   -- The discriminator for a run total that reads SMALLER than the key really
   -- was: a snapshot taken whole supersedes the pulls it already covers, and if
   -- the client opens a fresh session mid-key that rule discards real combat.
-  head("pulls superseded by a whole-session read: %d (0 means none were discarded)",
-    self.superseded or 0)
+  head("whole-key reads reconciled with the pulls: %d (added to them would double the key)",
+    self.reconciled or 0)
   head("drill-downs refused for a secret guid: %d (kickable column needs these)",
     self.secretGuidRefusals or 0)
   head("pull deltas whose rows did not match the totals: %d (0 is correct)",
@@ -1209,7 +1322,7 @@ local function pullOut(p)
   return out
 end
 
-local function runOut(run, pulls, baseline)
+local function runOut(run, pulls, baseline, whole)
   local out = {
     map = strOut(run.mapName), level = numOut(run.level),
     at = numOut(run.at) or epoch(),
@@ -1224,6 +1337,9 @@ local function runOut(run, pulls, baseline)
     out.pulls[#out.pulls + 1] = pullOut(list[i])
   end
   if baseline then out.carry = pullOut(baseline) end
+  -- Stored apart from the pulls, because adding it to them is the bug this
+  -- exists to prevent and a file round trip must not quietly do it.
+  if whole then out.whole = pullOut(whole) end
   return out
 end
 
@@ -1278,7 +1394,8 @@ local function runIn(rec)
     local pull = pullIn(rec.pulls[i])
     if pull then out.pulls[#out.pulls + 1] = pull end
   end
-  if #out.pulls == 0 then return nil end
+  out.whole = pullIn(rec.whole)
+  if #out.pulls == 0 and not out.whole then return nil end
   out.carry = pullIn(rec.carry)
   return out
 end
@@ -1301,12 +1418,12 @@ function Meter:Persist()
     local endedAt = true
     if run.open then endedAt = nil end
     h.runs[i] = runOut({ mapName = run.map, level = run.level, at = run.at,
-                         endedAt = endedAt }, run.pulls, nil)
+                         endedAt = endedAt }, run.pulls, nil, run.whole)
   end
   -- A run with no pulls in it is not worth a record, and writing one would make
   -- "we were in a key" survive a logout as a key with nothing in it.
-  if self.run and #self.pulls > 0 then
-    h.current = runOut(self.run, self.pulls, self.baseline)
+  if self.run and (#self.pulls > 0 or self.wholeKey) then
+    h.current = runOut(self.run, self.pulls, self.baseline, self.wholeKey)
   end
   ns.db.history = h
   return h
@@ -1316,7 +1433,7 @@ end
 -- when another one starts, and when one is abandoned -- a reset key's packs
 -- really happened, so they are kept rather than deleted.
 function Meter:Archive()
-  if not self.run or #self.pulls == 0 then return nil end
+  if not self.run or (#self.pulls == 0 and not self.wholeKey) then return nil end
   local run = { map = self.run.mapName, level = self.run.level,
                 at = self.run.at or epoch(), pulls = {},
                 -- A key with no endedAt never reached CHALLENGE_MODE_COMPLETED:
@@ -1325,6 +1442,7 @@ function Meter:Archive()
                 -- dropdown, and the one that counted is unfindable among them.
                 open = (self.run.endedAt == nil) or nil }
   for i, pull in ipairs(self.pulls) do run.pulls[i] = pull end
+  run.whole = self.wholeKey
   table.insert(self.history, 1, run)
   trimHistory()
   return run
@@ -1374,6 +1492,7 @@ function Meter:Restore()
       self.run = { level = cur.level, mapName = cur.map, at = cur.at,
                    startedAt = GetTime() }
       self.pulls = cur.pulls
+      self.wholeKey = cur.whole
       self.baseline = cur.carry
       self.resumed = #cur.pulls
     else
@@ -1497,7 +1616,7 @@ end
 -- 1 kick of 62 and 89.3m of 302.4m, over 7 of the 8 pulls the log segments.
 -- Two metrics failing at wildly different rates cannot come from one blanket
 -- failure to harvest, and the counters already here (blockedHarvests,
--- superseded, joinDrift) say WHICH rule fired without ever saying what the
+-- reconciled, joinDrift) say WHICH rule fired without ever saying what the
 -- numbers going into it were.
 --
 -- So every harvest now records the three figures that tell the candidates
@@ -1674,6 +1793,9 @@ function Meter:Forget(scope)
   if scope == "current" or scope == "all" then
     pulls = pulls + #self.pulls
     self.pulls = {}
+    -- It measures the key the pulls came from; keeping it would leave the run
+    -- total reporting a key the player just cleared.
+    self.wholeKey = nil
     -- The baseline is what the next harvest subtracts from. Dropping the pulls
     -- and keeping it would make the next pull a delta from numbers nobody can
     -- see any more; with it gone, diffSnapshot takes the next snapshot whole.
@@ -1796,7 +1918,7 @@ local function ago(at)
 end
 
 function Meter:RunLabel(run)
-  local total = self:TotalOf(run.pulls)
+  local total = self:TotalOf(run.pulls, run.whole)
   local when = ago(run.at)
   return ("%s%s%s  %s  %d pull%s%s"):format(
     run.map or "key", run.level and (" +" .. run.level) or "",
@@ -1853,6 +1975,7 @@ function Meter:ParseSegment(key)
   local id = key:match("^session:(.+)$")
   if id then return "session", tonumber(id) or id end
   if key == "overall" then return "run" end
+  if key == "whole" then return "whole" end
   return "live"
 end
 
@@ -1885,6 +2008,16 @@ function Meter:Segments()
       label = ("%s  %s  %d kicks"):format(
         pull.wholeRun and "whole key" or ("pull " .. i),
         self:Clock(pull.duration or 0), pull.kicks or 0),
+    }
+  end
+
+  -- The client's own reading of the finished key, kept selectable so the two
+  -- measurements the run total reconciles can both be looked at (R-47).
+  if self.wholeKey then
+    out[#out + 1] = {
+      key = "whole", kind = "whole",
+      label = ("the client's whole key  %s  %d kicks"):format(
+        self:Clock(self.wholeKey.duration or 0), self.wholeKey.kicks or 0),
     }
   end
 
@@ -1956,9 +2089,16 @@ function Meter:View(key)
         pull.wholeRun and "whole key" or ("pull " .. n2),
         self:Clock(pull.duration or 0)), kind
     end
-    local total = self:TotalOf(run.pulls)
+    local total = self:TotalOf(run.pulls, run.whole)
     if not total then return nil end
     return total.rows, true, ("saved  %s"):format(self:RunLabel(run)), kind
+  end
+
+  if kind == "whole" then
+    local w = self.wholeKey
+    if not w then return nil end
+    return w.rows, true,
+      ("the client's whole key  %s"):format(self:Clock(w.duration or 0)), kind
   end
 
   if kind == "pull" then
@@ -2054,14 +2194,6 @@ end
 -- identity (classFilename/specIconID) is the only one readable in both regimes;
 -- the guid is definitive when present; the name is last because it is the one
 -- that changes availability across exactly the boundary this has to survive.
-local function keysOf(r)
-  local k = {}
-  if r.guid ~= nil then k[#k + 1] = "g:" .. tostring(r.guid) end
-  if r.identity then k[#k + 1] = "i:" .. r.identity end
-  if r.name then k[#k + 1] = "n:" .. r.name end
-  return k
-end
-
 local function diffSnapshot(snap, base)
   if not base then return snap end
   -- THE IDENTIFIER FIRST, the arithmetic only as a fallback.
@@ -2205,15 +2337,10 @@ local function harvest(try)
   end
 
   -- A snapshot taken WHOLE (diffSnapshot could not difference it -- no baseline,
-  -- or the session went backwards and is a different one) re-covers ground the
-  -- pulls already in hand may describe. Adding it beside them counts that ground
-  -- twice, which is what `run 34:00  18 pulls` was for a 12:57 key.
-  --
-  -- The two cases are told apart by size, not by guesswork: a fresh session that
-  -- ALREADY HOLDS at least what we harvested is the same fight read again, and
-  -- supersedes it; one holding less is genuinely new combat and is appended. The
-  -- superseded pulls are not deleted silently -- the surviving pull says it is
-  -- the whole run, which is what the dropdown labels "whole key".
+  -- or the session is a different one) re-covers ground the pulls already in
+  -- hand may describe. Adding it beside them counts that ground twice, which is
+  -- what `run 34:00  18 pulls` was for a 12:57 key, and `42:33  19 pulls  87
+  -- kicks` for a 25:03 key the log says had 47.
   local taken = (pull == snap)
   -- first      -- taken whole because there was no baseline yet
   -- session    -- taken whole because the session ID CHANGED (the common case:
@@ -2226,45 +2353,54 @@ local function harvest(try)
   local why = taken
     and (base and (newSession and "session" or "restart") or "first")
     or "delta"
-  -- Supersede is for ONE thing: the read taken after the key ends, where the
-  -- client finally hands over the whole finished key and the pulls in hand
-  -- describe the same ground. It used to fire on size alone -- "a fresh session
-  -- already holding at least what we harvested is the same fight read again" --
-  -- which the per-pull session ids disprove: pull 2 of a key routinely holds
-  -- more than pull 1, and discarding pull 1 for it loses the pull outright.
-  -- Mid-key, a new session is a new pull. Full stop.
+  -- A whole read taken AFTER the key has ended is not a pull and is not a
+  -- replacement for the pulls: it is a second, independent measurement of the
+  -- same finished key. The key is over, so there is no new combat it could be
+  -- describing -- that is the whole of the reasoning, and it needs no size
+  -- test. It is held BESIDE the pulls and the two are reconciled per row by
+  -- Meter:TotalOf (R-47).
+  --
+  -- This replaces supersede, which tried to decide by size whether to DISCARD
+  -- the pulls, and got it wrong in both directions: mid-key it threw away pull
+  -- 1 because pull 2 held more, and after the key it appended 46 kicks beside
+  -- the 41 already harvested because the read happened to hold fewer DEATHS.
   local closed = Meter.run.endedAt ~= nil
-  if taken and #Meter.pulls > 0 then
-    local had = { kicks = 0, taken = 0, deaths = 0 }
-    for _, p in ipairs(Meter.pulls) do
-      had.kicks, had.taken, had.deaths =
-        had.kicks + (p.kicks or 0), had.taken + (p.taken or 0), had.deaths + (p.deaths or 0)
-    end
-    if closed and pull.kicks >= had.kicks and pull.taken >= had.taken
-      and pull.deaths >= had.deaths then
-      Meter.superseded = (Meter.superseded or 0) + #Meter.pulls
-      Meter.pulls = {}
-      pull.wholeRun = true
-      why = "superseded"
-    else
-      why = why .. "+appended"
-    end
-  end
+  local isWholeKey = taken and closed and #Meter.pulls > 0
 
-  pull.index = #Meter.pulls + 1
-  -- The honest name for "the first thing we could read was the finished key".
-  if pull.wholeRun == nil then
-    pull.wholeRun = (taken and Meter.run.endedAt ~= nil) or nil
+  if isWholeKey then
+    pull.wholeRun = true
+    -- More than one whole read can land after a key ends -- the completion
+    -- fires one, the restriction lifting fires another, and stray post-key
+    -- combat opens sessions of its own. They are all readings of the same
+    -- finished key, so they reconcile into each other by the same per-row
+    -- maximum rather than the last one winning: a small late read must not
+    -- displace the one that actually saw the key.
+    if Meter.wholeKey then
+      local merged = Meter:TotalOf({ Meter.wholeKey }, pull)
+      merged.wholeRun, merged.sid = true, pull.sid
+      Meter.wholeKey = merged
+    else
+      Meter.wholeKey = pull
+    end
+    Meter.reconciled = (Meter.reconciled or 0) + 1
+    trace("whole")
+  else
+    if taken and #Meter.pulls > 0 then why = why .. "+appended" end
+    pull.index = #Meter.pulls + 1
+    -- The honest name for "the first thing we could read was the finished key".
+    if pull.wholeRun == nil then
+      pull.wholeRun = (taken and Meter.run.endedAt ~= nil) or nil
+    end
+    Meter.pulls[pull.index] = pull
+    trace(why)
   end
-  Meter.pulls[pull.index] = pull
-  trace(why)
 
   -- Written the moment it exists, not at logout: the report of a key you just
   -- finished should survive a crash, a disconnect, or an alt-F4 as well as it
   -- survives a tidy /reload.
   Meter:Persist()
 
-  if ns.db and ns.db.pullReport then Meter:Announce(pull) end
+  if not isWholeKey and ns.db and ns.db.pullReport then Meter:Announce(pull) end
   if ns.Panel then ns.Panel:Refresh() end
 
   -- The key may already be over by the time anything became readable. Report
@@ -2360,6 +2496,7 @@ local function startRun()
   -- Whatever was in memory belongs to the key that just ended, not to this one.
   Meter:Archive()
   Meter.pulls = {}
+  Meter.wholeKey = nil
   Meter.baseline = nil
   -- The trace describes harvests into the key that just ended. Kept in the
   -- file until the next harvest overwrites it, so the audit taken at the end of
@@ -2398,7 +2535,7 @@ ns.On("CHALLENGE_MODE_RESET", function()
   -- An abandoned key's packs really happened, so they are archived rather than
   -- deleted -- the run simply stops being the live one.
   Meter:Archive()
-  Meter.pulls = {}; Meter.run = nil; Meter.baseline = nil
+  Meter.pulls = {}; Meter.wholeKey = nil; Meter.run = nil; Meter.baseline = nil
   Meter:Persist()
 end)
 
@@ -2419,7 +2556,7 @@ function Meter:CloseAbandoned()
   local function finish()
     if not Meter.run or keyIsActive() then return end
     Meter:Archive()
-    Meter.pulls = {}; Meter.run = nil; Meter.baseline = nil
+    Meter.pulls = {}; Meter.wholeKey = nil; Meter.run = nil; Meter.baseline = nil
     Meter:Persist()
     if ns.Panel then ns.Panel:Refresh() end
   end

@@ -173,7 +173,9 @@ rather than at logout — so a crash or a disconnect keeps them too.
 ```
 > key so far  12:40
   run  12:40  2 pulls
-  whole key  1:00  5 kicks
+  pull 1  0:42  3 kicks
+  pull 2  1:00  5 kicks
+  the client's whole key  25:03  46 kicks
   saved  Altar of Fangs +17 (abandoned)  1:13  3 pulls  1h ago
   saved  Ruby Life Pools +10  17:09  8 pulls  2h ago
   saved  The Blinding Vale +13  24:11  1 pull  1d ago
@@ -182,6 +184,25 @@ rather than at logout — so a crash or a disconnect keeps them too.
 A stored key lists its total; select it and its own pulls appear underneath,
 because ten keys' worth of pulls is a menu taller than the screen. `/uk history`
 is the same list in chat.
+
+### Two readings of one key, and why `run` is not their sum
+
+Once a key ends the client finally hands over its own reading of the whole
+thing, in one go. That is a **second measurement of the same key**, not a pull
+of it — and adding it to the pulls is how the panel once reported `42:33, 19
+pulls, 87 kicks` for a 25:03 Temple of Sethraliss the log and Blizzard's own
+meter both put at 47 kicks.
+
+Neither reading is the truth. The pulls miss whatever the restriction refused to
+hand over; the whole-key read misses whatever its session never held — on that
+key it carried one death where the pulls had four. Both are *lower bounds*, so
+`run` is the **per-row maximum** of the two rather than their sum or a choice
+between them: on that key, 16/15/9/7, exactly the log on every player. It can
+neither double-count nor throw a measurement away.
+
+The whole-key read stays selectable in the dropdown as `the client's whole key`,
+so both numbers the run total is built from can be looked at directly, and
+`/uk audit` reports how many were reconciled.
 
 A key that was **restarted after a wipe** never reaches
 `CHALLENGE_MODE_COMPLETED`, and it is stored as the attempt it was: the line

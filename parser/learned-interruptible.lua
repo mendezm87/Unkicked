@@ -3,8 +3,10 @@
 --   false = you asserted by hand that this cast cannot be interrupted
 -- Safe to edit. Regenerated additively; hand-written entries are preserved.
 return {
+  [267027] = true,  -- Poison Spit
   [267273] = true,
   [267763] = true,
+  [268013] = true,  -- Flame Shock
   [269369] = true,
   [269972] = true,
   [270492] = true,
@@ -42,6 +44,8 @@ return {
   [1289416] = true,
   [1290147] = true,  -- Poison Bolt
   [1290198] = true,  -- Toxin Infusion
+  [1291262] = true,  -- Lightning Bolt
+  [1293307] = true,  -- Addle Mind
   [1294557] = true,
   [1294815] = true,
   [1294972] = true,
@@ -50,10 +54,12 @@ return {
   [1298899] = true,
   [1299938] = true,
   [1301834] = true,
+  [1302158] = true,  -- Flame Shock
   [1303375] = true,  -- Spew Venom
   [1305955] = true,
   [1307567] = true,
   [1310324] = true,
   [1310358] = true,
   [1310666] = true,
+  [1310683] = true,  -- Venom Bolt
 }

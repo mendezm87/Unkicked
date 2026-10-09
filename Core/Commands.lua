@@ -110,7 +110,7 @@ SlashCmdList.UNKICKED = function(msg)
     else
       ns.Print("keys kept from earlier sessions (%d):", #runs)
       for i, run in ipairs(runs) do
-        local total = ns.Meter:TotalOf(run.pulls)
+        local total = ns.Meter:TotalOf(run.pulls, run.whole)
         print(("  |cff808080%d.|r %s  |cff808080%d kicks, %d deaths|r  |cff505050saved:%d|r")
           :format(i, ns.Meter:RunLabel(run), total and total.kicks or 0,
                   total and total.deaths or 0, i))

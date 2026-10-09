@@ -2228,20 +2228,130 @@ do
   stub.fire("PLAYER_REGEN_ENABLED")
 
   local total = ns.Meter:Total()
-  eq(total.kicks, 78, "the whole-run read REPLACES the pulls it covers, never adds to them")
+  eq(total.kicks, 78, "the whole-key read is reconciled with the pulls, never added to them")
   ok(total.kicks ~= 37 + 78, "37 + 78 = 115 is the double count this exists to prevent")
-  eq(#ns.Meter.pulls, 1, "and it stands alone, because it is the whole key")
-  ok(ns.Meter.pulls[1].wholeRun == true, "labelled the whole key rather than pull 3")
+  eq(#ns.Meter.pulls, 2, "and the pulls are KEPT -- it is a second reading, not a replacement")
+  ok(ns.Meter.wholeKey ~= nil, "held beside them as the client's own whole-key reading")
+  ok(ns.Meter.wholeKey and ns.Meter.wholeKey.wholeRun == true,
+     "labelled the whole key rather than pull 3")
 
-  -- The other half: a session that holds LESS than we harvested is genuinely new
-  -- combat, and must still be appended rather than thrown away.
+  -- The other half, and the case that caused R-47. A later read that holds
+  -- LESS must neither be added (the double count) nor allowed to displace the
+  -- bigger reading (a silent undercount).
   stub.setMeter("current", {
     { name = "Wtbjudgement", class = "PALADIN", icon = 11, guid = "P-w",
       kicks = 2, taken = 50, deaths = 0 },
   }, { duration = 30 })
   stub.fire("PLAYER_REGEN_ENABLED")
-  eq(#ns.Meter.pulls, 2, "a smaller fresh session is new combat, so it is appended")
-  eq(ns.Meter:Total().kicks, 80, "and adds to the run instead of replacing it")
+  eq(#ns.Meter.pulls, 2, "a smaller read after the key is still not a pull of it")
+  eq(ns.Meter:Total().kicks, 78, "and does not drag the run total down from 78")
+end
+
+print("\n[meter] the measured Temple of Sethraliss double count")
+do
+  -- MEASURED, 2026-10-09, Temple of Sethraliss +14. The log and Blizzard's own
+  -- meter window agree exactly: Shacuna 16, Jakkyboi 15 -- 31 between them.
+  -- The harvested pulls summed to 13 + 12 (short: a cross-session subtraction
+  -- ate one), the post-key read held 16 + 15, and the panel showed 56: the two
+  -- were ADDED, because the old rule refused to supersede on the grounds that
+  -- the read carried FEWER DEATHS (1) than the pulls (2).
+  loadAddon(false)
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 14, mapID = 1877, mapName = "Temple of Sethraliss", deaths = 4 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  local function read(sh, ja, shDeaths, duration, sid)
+    stub.meter.sessionID = sid
+    stub.setMeter("current", {
+      { name = "Shacuna", class = "SHAMAN", icon = 1, guid = "P-s",
+        kicks = sh, taken = 1000, deaths = shDeaths },
+      { name = "Jakkyboi", class = "ROGUE", icon = 2, guid = "P-j",
+        kicks = ja, taken = 1000, deaths = 0 },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  read(13, 12, 2, 600, 7)
+  eq(ns.Meter:Total().kicks, 25, "the pulls alone are short of the log's 31")
+
+  -- The key ends and the client hands over its own reading of the whole thing:
+  -- more kicks, FEWER deaths. Exactly the shape that vetoed the old supersede.
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  read(16, 15, 1, 1503, 9)
+
+  local total = ns.Meter:Total()
+  eq(total.kicks, 31, "reconciled per row, the run total is the log's 31")
+  ok(total.kicks ~= 56, "25 + 31 = 56 is the number the panel actually showed")
+  eq(total.deaths, 2, "and the deaths the PULLS saw survive the read that saw one")
+  local byName = {}
+  for _, r in ipairs(total.rows) do byName[r.name] = r end
+  eq(byName.Shacuna.kicks, 16, "Shacuna is the log's 16, not 13 and not 29")
+  eq(byName.Jakkyboi.kicks, 15, "Jakkyboi is the log's 15, not 12 and not 27")
+end
+
+print("\n[meter] the whole-key read survives a logout without being added in")
+do
+  -- The file is the one place the reconciliation could silently become a sum:
+  -- write the whole-key read into the pulls and every later login double counts
+  -- the key with no trace of why. It is stored APART from them, read back
+  -- apart, and reconciled again on the way out.
+  local function relog(keepDB)
+    loadAddon(keepDB)
+    assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+    assert(loadfile("Core/Commands.lua"))("Unkicked", ns)
+    stub.fire("PLAYER_LOGIN")
+  end
+
+  local function read(kicks, deaths, duration, sid)
+    stub.meter.sessionID = sid
+    stub.setMeter("current", {
+      { name = "Shacuna", class = "SHAMAN", icon = 1, guid = "P-s",
+        kicks = kicks, taken = 1000, deaths = deaths },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 14, mapID = 1877, mapName = "Temple of Sethraliss", deaths = 4 }
+  relog(false)
+
+  stub.fire("CHALLENGE_MODE_START")
+  read(13, 2, 600, 7)
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  read(16, 1, 1503, 9)
+  eq(ns.Meter:Total().kicks, 16, "reconciled in memory before the logout")
+
+  -- The key is over, so a relog archives it rather than resuming it.
+  stub.challenge.active = false
+  relog(true)
+  local run = ns.Meter.history[1]
+  ok(run ~= nil, "the finished key is in the history after a relog")
+  eq(#run.pulls, 1, "with its pull, not two")
+  ok(run.whole ~= nil, "and the client's whole-key reading stored beside it")
+  local total = ns.Meter:TotalOf(run.pulls, run.whole)
+  eq(total.kicks, 16, "which reads back as 16, not 13 and not 29")
+
+  -- Nothing secret, and nothing non-serialisable, reaches the file on the new
+  -- field any more than on the old ones.
+  local function sweep(t, path)
+    for k, v in pairs(t) do
+      ok(not ns.IsSecret(k) and not ns.IsSecret(v),
+         ("nothing secret at %s.%s"):format(path, tostring(k)))
+      local ty = type(v)
+      ok(ty == "table" or ty == "number" or ty == "string" or ty == "boolean",
+         ("%s.%s is serialisable (%s)"):format(path, tostring(k), ty))
+      if ty == "table" then sweep(v, path .. "." .. tostring(k)) end
+    end
+  end
+  sweep(ns.db.history, "history")
 end
 
 print("\n[meter] a session the client reopened is never differenced")
@@ -2297,9 +2407,10 @@ do
   read(13, 42, 295600000, 1492)
 
   total = ns.Meter:Total()
-  eq(total.kicks, 42, "the post-key read of the finished key SUPERSEDES the pulls it covers")
+  eq(total.kicks, 42, "the post-key read of the finished key is RECONCILED with the pulls")
   ok(total.kicks ~= 2 + 42, "2 + 42 is the appended double count from the measured key")
-  eq(#ns.Meter.pulls, 1, "and it stands alone as the whole key")
+  eq(#ns.Meter.pulls, 2, "the pulls are kept -- it is a second reading of them, not a pull")
+  ok(ns.Meter.wholeKey ~= nil, "and the reading is held beside them")
 end
 
 print("\n[meter] a baseline with no session id still falls back to the old check")
