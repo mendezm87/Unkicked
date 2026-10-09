@@ -273,6 +273,22 @@ saying what the numbers going into it were. The three columns tell them apart:
 - a **sess** id that *changes* between two lines means the client opened a fresh
   session mid-key — the third candidate, and invisible in every other number stored.
 
+**It answered, on the first key it ran against.** Kings' Rest +15, 2026-10-08: the
+`sess` column walks **6 → 13 across 40 harvests of one key**. The client opens a
+combat session roughly **per pull**, not one per key — so two consecutive harvests
+routinely come from fights that share no origin, and subtracting one from the other
+is meaningless in both directions. Until R-46 only one of those directions was
+caught (the totals going *backwards*); a new session holding *more* than the stale
+baseline was quietly differenced. Harvest #3 read session 7 at `2/2/31.2m` against a
+session 6 baseline of `0/0/21.4m` and recorded `2/2/9.8m` — 21.4m lost. At the end of
+the key the same fault doubles instead of losing: the panel read `run 46:04  26
+pulls  81 kicks` for a key the end-of-key report put at `21:12  25 pulls  39 kicks`.
+
+A snapshot now carries the session id it came from, and two different ids are never
+differenced. The `restart` label splits in two: **`session`** (the id changed — the
+ordinary case) and **`restart`** (the totals went backwards with no id to say so,
+which is what a baseline restored from SavedVariables looks like).
+
 Consecutive refusals collapse into one counted entry (`blocked x8`): the Altar key
 produced 239 of them against 17 pulls, which one-per-entry would have used the whole
 trace up on failures that are already counted elsewhere. It is written to

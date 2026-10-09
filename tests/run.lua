@@ -2244,6 +2244,101 @@ do
   eq(ns.Meter:Total().kicks, 80, "and adds to the run instead of replacing it")
 end
 
+print("\n[meter] a session the client reopened is never differenced")
+do
+  -- MEASURED, 2026-10-08, Kings' Rest +15. The harvest trace walked sessions
+  -- 6 -> 13 across one key: the client opens a fresh combat session PER PULL,
+  -- not one per key. Until now a new session was only noticed when its totals
+  -- went DOWN, so the two directions failed differently and both silently:
+  --
+  --   smaller than the baseline -> caught, taken whole (the old rule)
+  --   LARGER  than the baseline -> differenced, and the baseline's numbers --
+  --                                 which belong to a different fight -- were
+  --                                 subtracted off. Trace #3 read session 7 at
+  --                                 2/2/31.2m against a session 6 baseline of
+  --                                 0/0/21.4m and recorded 2/2/9.8m: 21.4m of
+  --                                 session 7 lost to arithmetic on a stranger.
+  loadAddon(false)
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+
+  local function read(sid, kicks, taken, duration)
+    stub.meter.sessionID = sid
+    stub.setMeter("current", {
+      { name = "Noeyednuck", class = "ROGUE", icon = 11, guid = "P-n",
+        kicks = kicks, taken = taken, deaths = 0 },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 15, mapID = 1763, mapName = "Kings' Rest", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  read(6, 0, 21400000, 66)      -- session 6, the first thing we could read
+  read(7, 2, 31200000, 125)     -- session 7: a DIFFERENT fight, and a larger one
+
+  local total = ns.Meter:Total()
+  eq(total.taken, 21400000 + 31200000,
+    "a reopened session is taken WHOLE, so none of it is subtracted away")
+  ok(total.taken ~= 21400000 + 9800000,
+    "31.2m - 21.4m = 9.8m is the loss this exists to prevent")
+  eq(total.kicks, 2, "and its kicks survive the session boundary intact")
+
+  -- The same rule has to hold at the end of the key, where it is a DOUBLE count
+  -- rather than a loss. The post-key read is a new session id holding the whole
+  -- finished key -- larger than the stale baseline, so the old code called it a
+  -- delta and appended it: `run 46:04  26 pulls  81 kicks` for a key the
+  -- end-of-key report put at 21:12 / 25 pulls / 39 kicks.
+  stub.fire("CHALLENGE_MODE_COMPLETED")
+  read(13, 42, 295600000, 1492)
+
+  total = ns.Meter:Total()
+  eq(total.kicks, 42, "the post-key read of the finished key SUPERSEDES the pulls it covers")
+  ok(total.kicks ~= 2 + 42, "2 + 42 is the appended double count from the measured key")
+  eq(#ns.Meter.pulls, 1, "and it stands alone as the whole key")
+end
+
+print("\n[meter] a baseline with no session id still falls back to the old check")
+do
+  -- A baseline restored from SavedVariables by an older build carries no id.
+  -- "absent" must not read as "different": every harvest would be taken whole
+  -- and the run would count the key once per pull. It falls through to the
+  -- backwards-check, which is what caught a post-reload session before ids
+  -- existed at all.
+  loadAddon(false)
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 15, mapID = 1763, mapName = "Kings' Rest", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  stub.meter.sessionID = 7
+  stub.setMeter("current", {
+    { name = "Noeyednuck", class = "ROGUE", icon = 11, guid = "P-n",
+      kicks = 3, taken = 1000, deaths = 0 },
+  }, { duration = 60 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+
+  ns.Meter.baseline.sid = nil   -- as a restored carry arrives
+  stub.setMeter("current", {
+    { name = "Noeyednuck", class = "ROGUE", icon = 11, guid = "P-n",
+      kicks = 5, taken = 1600, deaths = 0 },
+  }, { duration = 90 })
+  stub.fire("PLAYER_REGEN_ENABLED")
+
+  eq(ns.Meter:Total().kicks, 5,
+    "an idless baseline is still differenced, so the key is not counted per pull")
+  eq(#ns.Meter.pulls, 2, "and the second read is a delta beside the first")
+end
+
 print("\n[meter] a row is matched across the secret-name boundary")
 do
   -- The second mechanism behind the same double count. Inside the dungeon a

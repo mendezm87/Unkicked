@@ -784,6 +784,11 @@ function Meter:Snapshot(which)
   if not rows or not plain then return nil end
 
   local out = { rows = {}, duration = self:Duration(which), kicks = 0, deaths = 0, taken = 0 }
+  -- WHICH session these numbers came out of, so the next snapshot can tell
+  -- "the same fight, further along" from "a different fight entirely" by
+  -- identity rather than by whether the totals happened to go down.
+  out.sid = (type(which) == "table" and which.id ~= nil) and ns.Plain(which.id)
+    or newestSessionID()
   for _, row in ipairs(rows) do
     local r = {
       name = row.name, class = row.class, isYou = row.isYou,
@@ -1013,7 +1018,10 @@ function Meter:Audit(opts)
           or (src.guid ~= nil and "guid") or nil
         local g = gv == nil and "<absent>"
           or (("%s=%s"):format(gname, ns.IsSecret(gv) and "<secret>" or "plain"))
-        emit(("    [%d] %s guid=%s recap=%s amount=%s"):format(
+        -- `g` already names the field it found, so the literal label printed
+        -- `guid=sourceGUID=<secret>` -- the one line in the audit whose whole
+        -- job is to be read carefully.
+        emit(("    [%d] %s id: %s recap=%s amount=%s"):format(
           i, tostring(n or "<secret>"), g,
           tostring(ns.Plain(src.deathRecapID)),
           ns.IsSecret(src.totalAmount) and "<secret>" or tostring(ns.Plain(src.totalAmount))))
@@ -1176,8 +1184,17 @@ local function rowOut(r)
   }
 end
 
+-- A session id is a number on a live client, but it is read through Plain and
+-- a future client could spell it any way: keep whichever form survives, and
+-- nothing else. An id that does not survive comes back nil, which diffSnapshot
+-- reads as "no id" and falls back to the backwards-check -- never as a match.
+local function sidOut(v)
+  return numOut(v) or strOut(v)
+end
+
 local function pullOut(p)
   local out = {
+    sid = sidOut(p.sid),
     duration = numOut(p.duration) or 0,
     kicks = numOut(p.kicks) or 0,
     deaths = numOut(p.deaths) or 0,
@@ -1233,6 +1250,7 @@ end
 local function pullIn(p)
   if type(p) ~= "table" or type(p.rows) ~= "table" then return nil end
   local out = {
+    sid = sidOut(p.sid),
     duration = numOut(p.duration) or 0,
     kicks = numOut(p.kicks) or 0,
     deaths = numOut(p.deaths) or 0,
@@ -2046,6 +2064,25 @@ end
 
 local function diffSnapshot(snap, base)
   if not base then return snap end
+  -- THE IDENTIFIER FIRST, the arithmetic only as a fallback.
+  --
+  -- The client opens a fresh combat session per pull, not one per key: the
+  -- 2026-10-08 Kings' Rest +15 trace walks sessions 6 -> 13 across 40 harvests.
+  -- Two snapshots from DIFFERENT sessions share no origin, so subtracting one
+  -- from the other is meaningless in both directions -- and the direction
+  -- decides how it goes wrong. A new session holding LESS than the baseline was
+  -- already caught below; one holding MORE was silently differenced, which is
+  -- how harvest #3 (session 7 read against a session 6 baseline) lost 21.4m,
+  -- and how the post-key read of the finished key was appended beside the 25
+  -- pulls it already covered -- `run 46:04  26 pulls  81 kicks` for a key the
+  -- end-of-key report called 21:12 / 25 pulls / 39 kicks.
+  --
+  -- Both sides must actually HAVE an id: a baseline restored from the file
+  -- carries none, and "absent" is not "different". Those fall through to the
+  -- backwards-check, which is what caught a post-reload session before this.
+  if snap.sid ~= nil and base.sid ~= nil and snap.sid ~= base.sid then
+    return snap
+  end
   -- A session that went BACKWARDS is a different session (a meter reset, or
   -- Blizzard opening a fresh one). Diffing against it would give negatives, so
   -- the snapshot stands on its own.
@@ -2178,17 +2215,33 @@ local function harvest(try)
   -- superseded pulls are not deleted silently -- the surviving pull says it is
   -- the whole run, which is what the dropdown labels "whole key".
   local taken = (pull == snap)
-  -- first    -- taken whole because there was no baseline yet
-  -- restart  -- taken whole because the session went BACKWARDS (a new session)
-  -- delta    -- differenced against the baseline, the ordinary case
-  local why = taken and (base and "restart" or "first") or "delta"
+  -- first      -- taken whole because there was no baseline yet
+  -- session    -- taken whole because the session ID CHANGED (the common case:
+  --               the client opens one session per pull)
+  -- restart    -- taken whole because the session went BACKWARDS, with no id to
+  --               say so -- a baseline restored from the file, or an older client
+  -- delta      -- differenced against the baseline, the ordinary case
+  local newSession = base ~= nil and snap.sid ~= nil and base.sid ~= nil
+    and snap.sid ~= base.sid
+  local why = taken
+    and (base and (newSession and "session" or "restart") or "first")
+    or "delta"
+  -- Supersede is for ONE thing: the read taken after the key ends, where the
+  -- client finally hands over the whole finished key and the pulls in hand
+  -- describe the same ground. It used to fire on size alone -- "a fresh session
+  -- already holding at least what we harvested is the same fight read again" --
+  -- which the per-pull session ids disprove: pull 2 of a key routinely holds
+  -- more than pull 1, and discarding pull 1 for it loses the pull outright.
+  -- Mid-key, a new session is a new pull. Full stop.
+  local closed = Meter.run.endedAt ~= nil
   if taken and #Meter.pulls > 0 then
     local had = { kicks = 0, taken = 0, deaths = 0 }
     for _, p in ipairs(Meter.pulls) do
       had.kicks, had.taken, had.deaths =
         had.kicks + (p.kicks or 0), had.taken + (p.taken or 0), had.deaths + (p.deaths or 0)
     end
-    if pull.kicks >= had.kicks and pull.taken >= had.taken and pull.deaths >= had.deaths then
+    if closed and pull.kicks >= had.kicks and pull.taken >= had.taken
+      and pull.deaths >= had.deaths then
       Meter.superseded = (Meter.superseded or 0) + #Meter.pulls
       Meter.pulls = {}
       pull.wholeRun = true

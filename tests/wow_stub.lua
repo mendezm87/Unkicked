@@ -243,6 +243,11 @@ stub.meter = {
                         -- guid came back secret with the name and total beside it
                         -- plain, and stayed secret after the key ended
   emptyCurrent = false,   -- reproduces the post-reset empty Current session
+  -- MEASURED on a real key (Kings' Rest +15, 2026-10-08): the client opens a
+  -- fresh combat session per pull -- the harvest trace walked 6 -> 13 across one
+  -- key. A fixed id made every test agree that a key is one session, which is
+  -- the assumption the run total was wrong under.
+  sessionID = 42,
   duration = { current = 60, overall = 300 },
   players = { current = {}, overall = {} },
   sourceCalls = {},
@@ -339,10 +344,10 @@ C_DamageMeter = {
     return { combatSources = sourcesFor(which, attr) }
   end,
 
-  GetAvailableCombatSessions = function() return { { sessionID = 42 } } end,
+  GetAvailableCombatSessions = function() return { { sessionID = stub.meter.sessionID } } end,
 
   GetCombatSessionFromID = function(id, attr)
-    if id ~= 42 then return nil end
+    if id ~= stub.meter.sessionID then return nil end
     return { combatSources = sourcesFor("current", attr) }
   end,
 
