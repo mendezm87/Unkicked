@@ -941,6 +941,20 @@ Meter.KICKABLE_WHY = {
 -- death row), so one metric regressing vetoed the whole thing and the read was
 -- appended instead. A maximum needs no such test: it can neither double-count
 -- nor discard, whatever the read turns out to hold.
+-- The totals are always recomputed from the rows rather than tracked alongside
+-- them: the rows are the measurement, and three code paths now add to them.
+local function resum(total)
+  total.kicks, total.deaths, total.taken = 0, 0, 0
+  total.kickable, total.kick = nil, nil
+  for _, acc in ipairs(total.rows) do
+    total.kicks = total.kicks + acc.kicks
+    total.deaths = total.deaths + acc.deaths
+    total.taken = total.taken + acc.taken
+    if acc.kickable then total.kickable = (total.kickable or 0) + acc.kickable end
+    if acc.kick then total.kick = addStats(total.kick, acc.kick) end
+  end
+end
+
 local function reconcile(total, whole)
   if not whole or not whole.rows then return total end
   local byKey = {}
@@ -972,15 +986,7 @@ local function reconcile(total, whole)
     if r.kick then acc.kick = maxStats(acc.kick, r.kick) end
   end
 
-  total.kicks, total.deaths, total.taken = 0, 0, 0
-  total.kickable, total.kick = nil, nil
-  for _, acc in ipairs(total.rows) do
-    total.kicks = total.kicks + acc.kicks
-    total.deaths = total.deaths + acc.deaths
-    total.taken = total.taken + acc.taken
-    if acc.kickable then total.kickable = (total.kickable or 0) + acc.kickable end
-    if acc.kick then total.kick = addStats(total.kick, acc.kick) end
-  end
+  resum(total)
   -- Same rule for the clock: the pulls cover only the packs, the whole-key read
   -- covers the key. Whichever saw more time saw more of it.
   total.duration = math.max(total.duration or 0, whole.duration or 0)
@@ -1005,41 +1011,61 @@ function Meter:TotalOf(pulls, whole)
   -- harvested pull has carried nil -- and summing those into 0 rendered the
   -- column as a measured zero in the run view while the live view, which
   -- computes nothing at all, rendered it blank. Same unknown, two answers.
-  local total = { rows = {}, kicks = 0, deaths = 0, taken = 0, kickable = nil,
+  local total = { rows = order, kicks = 0, deaths = 0, taken = 0, kickable = nil,
                   duration = 0, pulls = #pulls }
 
-  for _, pull in ipairs(pulls) do
-    total.duration = total.duration + (pull.duration or 0)
-    for _, r in ipairs(pull.rows) do
-      local key = r.name or r.identity or tostring(r)
-      local acc = byKey[key]
-      if not acc then
-        acc = { name = r.name, class = r.class, isYou = r.isYou,
-                -- Carried so reconcile() can join the whole-key read onto this
-                -- row by the same most-stable-first keys the differencing uses.
-                identity = r.identity, guid = r.guid,
-                kicks = 0, taken = 0, deaths = 0, kickable = nil, kick = nil }
-        byKey[key] = acc
-        order[#order + 1] = acc
+  local function fold(list)
+    for _, pull in ipairs(list) do
+      total.duration = total.duration + (pull.duration or 0)
+      for _, r in ipairs(pull.rows) do
+        local key = r.name or r.identity or tostring(r)
+        local acc = byKey[key]
+        if not acc then
+          acc = { name = r.name, class = r.class, isYou = r.isYou,
+                  -- Carried so reconcile() can join the whole-key read onto this
+                  -- row by the same most-stable-first keys the differencing uses.
+                  identity = r.identity, guid = r.guid,
+                  kicks = 0, taken = 0, deaths = 0, kickable = nil, kick = nil }
+          byKey[key] = acc
+          order[#order + 1] = acc
+        end
+        acc.kicks = acc.kicks + r.kicks
+        acc.taken = acc.taken + r.taken
+        acc.deaths = acc.deaths + r.deaths
+        if r.kickable then acc.kickable = (acc.kickable or 0) + r.kickable end
+        if r.kick then acc.kick = addStats(acc.kick, r.kick) end
       end
-      acc.kicks = acc.kicks + r.kicks
-      acc.taken = acc.taken + r.taken
-      acc.deaths = acc.deaths + r.deaths
-      if r.kickable then acc.kickable = (acc.kickable or 0) + r.kickable end
-      if r.kick then acc.kick = addStats(acc.kick, r.kick) end
     end
   end
 
-  for _, acc in ipairs(order) do
-    total.kicks = total.kicks + acc.kicks
-    total.deaths = total.deaths + acc.deaths
-    total.taken = total.taken + acc.taken
-    if acc.kickable then total.kickable = (total.kickable or 0) + acc.kickable end
-    if acc.kick then total.kick = addStats(total.kick, acc.kick) end
-    total.rows[#total.rows + 1] = acc
+  -- A whole-key read is a second measurement of the ground the pulls BEFORE it
+  -- cover, and no measurement at all of combat that happened after it. So the
+  -- two groups meet the read differently: the earlier pulls are reconciled
+  -- against it by the per-row maximum, and the later ones are added on top of
+  -- the result. Lumping them together would let a pull fought after the read
+  -- be silently swallowed by it.
+  local before, after = pulls, nil
+  if whole then
+    before, after = {}, {}
+    for _, pull in ipairs(pulls) do
+      if pull.afterWhole then after[#after + 1] = pull else before[#before + 1] = pull end
+    end
   end
 
+  fold(before)
+  resum(total)
   reconcile(total, whole)
+  if after and #after > 0 then
+    -- reconcile() may have added rows for players no pull ever saw; they are
+    -- joinable targets for what follows, so the index is rebuilt over the rows
+    -- as they now stand.
+    byKey = {}
+    for _, acc in ipairs(total.rows) do
+      byKey[acc.name or acc.identity or tostring(acc)] = acc
+    end
+    fold(after)
+    resum(total)
+  end
 
   -- Most kicks first. Legal here and only here: a snapshot is plain by
   -- construction, so these numbers can actually be compared.
@@ -1315,6 +1341,7 @@ local function pullOut(p)
     kickable = numOut(p.kickable),
     kick = statsOut(p.kick),
     wholeRun = p.wholeRun and true or nil,
+    afterWhole = p.afterWhole and true or nil,
     rows = {},
   }
   local rows = p.rows or {}
@@ -1374,6 +1401,7 @@ local function pullIn(p)
     kickable = numOut(p.kickable),
     kick = statsIn(p.kick),
     wholeRun = p.wholeRun and true or nil,
+    afterWhole = p.afterWhole and true or nil,
     rows = {}, stored = true,
   }
   for i = 1, math.min(#p.rows, MAX_ROWS) do
@@ -2298,6 +2326,10 @@ function Meter:Difference(snap, base) return diffSnapshot(snap, base) end
 -- map never lets go; the end-of-key harvest then captures the whole run at once.
 local HARVEST_TRIES = 4
 local HARVEST_GAP = 0.75
+-- Our clock and the client's combat timer are not the same clock. A read is
+-- only called old ground when it exceeds the elapsed time by more than this, so
+-- rounding and frame skew can never be mistaken for overlap.
+local CLOCK_SLACK = 5
 
 local function harvest(try)
   if not Meter.run then return end
@@ -2317,6 +2349,11 @@ local function harvest(try)
   local base = Meter.baseline
   local pull = diffSnapshot(snap, base)
   Meter.baseline = snap
+  -- When we last managed to READ, which is the measuring stick for whether a
+  -- read that cannot be differenced is new combat or old ground read again
+  -- (R-48). An empty read counts: it is still a look at the client.
+  local lastReadAt = Meter.lastReadAt
+  Meter.lastReadAt = (GetTime and GetTime()) or nil
 
   -- Deliberately NOT a summary of what happened: the raw read, the baseline and
   -- the recorded delta, so the next key says which of the three candidates for
@@ -2365,7 +2402,31 @@ local function harvest(try)
   -- 1 because pull 2 held more, and after the key it appended 46 kicks beside
   -- the 41 already harvested because the read happened to hold fewer DEATHS.
   local closed = Meter.run.endedAt ~= nil
-  local isWholeKey = taken and closed and #Meter.pulls > 0
+
+  -- The event is not the measurement. MEASURED, 2026-10-10, The Blinding Vale
+  -- +13: the whole key -- 68 kicks, 25:26 of combat -- arrived in a NEW session
+  -- on the falling edge of the restriction, which happens when the last boss
+  -- dies, and PLAYER_REGEN_ENABLED beat CHALLENGE_MODE_COMPLETED to it. So
+  -- `closed` was still false, the read was appended as a 19th pull, and the
+  -- panel read 111 kicks for a key with 68: the pulls' 43 plus the whole key.
+  --
+  -- What identifies it without waiting for an event is arithmetic. A read is a
+  -- COMBAT duration, and combat cannot have happened before it happened: a
+  -- session holding more seconds of combat than the wall clock has given it
+  -- since we last looked MUST be counting combat from before we last looked --
+  -- which is combat the pulls in hand already describe. 25:26 of combat could
+  -- not have appeared in the 3:25 since the previous read. That is a proof
+  -- about overlap, not a judgement about size, so it needs no threshold.
+  --
+  -- A zero elapsed is NOT the strongest form of that proof, it is the absence
+  -- of one: our own clock never moved between the two reads, so there is no
+  -- measurement to reason from. In game it always moves; headless it routinely
+  -- does not, and a replay must not be read as evidence.
+  local elapsed = lastReadAt and ((GetTime and GetTime()) or 0) - lastReadAt or nil
+  local covers = taken and elapsed ~= nil and elapsed > 0
+    and (snap.duration or 0) > elapsed + CLOCK_SLACK
+
+  local isWholeKey = taken and #Meter.pulls > 0 and (closed or covers)
 
   if isWholeKey then
     pull.wholeRun = true
@@ -2383,10 +2444,15 @@ local function harvest(try)
       Meter.wholeKey = pull
     end
     Meter.reconciled = (Meter.reconciled or 0) + 1
-    trace("whole")
+    trace(closed and "whole" or "whole+covers")
   else
     if taken and #Meter.pulls > 0 then why = why .. "+appended" end
     pull.index = #Meter.pulls + 1
+    -- Combat harvested AFTER a whole-key read is new on top of it, not another
+    -- lower bound on the same ground, so the total ADDS it rather than taking a
+    -- maximum against it. Only reachable mid-key, where a whole read can still
+    -- be followed by real pulls.
+    if Meter.wholeKey then pull.afterWhole = true end
     -- The honest name for "the first thing we could read was the finished key".
     if pull.wholeRun == nil then
       pull.wholeRun = (taken and Meter.run.endedAt ~= nil) or nil
@@ -2498,6 +2564,9 @@ local function startRun()
   Meter.pulls = {}
   Meter.wholeKey = nil
   Meter.baseline = nil
+  -- Nothing has been read into THIS key yet, so the elapsed measurement the
+  -- overlap proof rests on starts over with it.
+  Meter.lastReadAt = nil
   -- The trace describes harvests into the key that just ended. Kept in the
   -- file until the next harvest overwrites it, so the audit taken at the end of
   -- an abandoned key still has it, but not carried into the new key's reading.

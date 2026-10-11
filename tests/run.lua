@@ -2490,6 +2490,97 @@ do
   ok(e.joinDrift ~= nil, "an unmatchable row is counted as drift, not hidden")
 end
 
+print("\n[meter] the measured Blinding Vale whole-key read, before the key is marked over")
+do
+  -- MEASURED, 2026-10-10, The Blinding Vale +13. The audit's raw rows give the
+  -- key as 68 kicks (Nimibear 27, Floofytail 20, Spirtbreaker 16, Tungris 5).
+  -- The 17 harvested pulls summed to 43, and the panel read 111: the two ADDED.
+  --
+  -- R-47 is supposed to catch this and could not. The whole-key read arrived in
+  -- a NEW session on the falling edge of the restriction -- the moment the last
+  -- boss dies -- and PLAYER_REGEN_ENABLED reached the harvest before
+  -- CHALLENGE_MODE_COMPLETED did, so `run.endedAt` was still nil and the read
+  -- was appended as a 19th pull. The trace shows it: `session+appended`, sess
+  -- 10, 1526 seconds of combat.
+  loadAddon(false)
+  assert(loadfile("UI/Panel.lua"))("Unkicked", ns)
+  stub.fire("PLAYER_LOGIN")
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.wallclock = 1770000000
+  stub.challenge = { level = 13, mapID = 2097, mapName = "The Blinding Vale", deaths = 1 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  local function read(ni, fl, duration, sid)
+    stub.meter.sessionID = sid
+    stub.setMeter("current", {
+      { name = "Nimibear", class = "DRUID", icon = 1, guid = "P-n",
+        kicks = ni, taken = 1000, deaths = 0 },
+      { name = "Floofytail", class = "HUNTER", icon = 2, guid = "P-f",
+        kicks = fl, taken = 1000, deaths = 0 },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.advance(210); read(11, 8, 205, 4)
+  stub.advance(190); read(19, 13, 385, 4)   -- same session, so an ordinary delta
+  eq(ns.Meter:Total().kicks, 32, "the pulls alone are short of the key's 47")
+  eq(#ns.Meter.pulls, 2, "two pulls so far")
+
+  -- The key is OVER but nothing has said so yet. 25:26 of combat cannot have
+  -- happened in the 3:25 since we last read, so this session is counting ground
+  -- the pulls already describe -- which is the proof, independent of any event.
+  stub.advance(205); read(27, 20, 1526, 10)
+
+  local total = ns.Meter:Total()
+  eq(#ns.Meter.pulls, 2, "it is not a third pull: no event said so, the clock did")
+  ok(ns.Meter.wholeKey ~= nil, "it is held beside the pulls as a whole-key reading")
+  eq(total.kicks, 47, "reconciled per row, the run total is the read's 27 + 20")
+  ok(total.kicks ~= 32 + 47, "32 + 47 = 79 is the shape of the panel's 111")
+  local byName = {}
+  for _, r in ipairs(total.rows) do byName[r.name] = r end
+  eq(byName.Nimibear.kicks, 27, "Nimibear is the audit's 27, not 19 and not 46")
+  eq(byName.Floofytail.kicks, 20, "Floofytail is the audit's 20, not 13 and not 33")
+
+  -- Mid-key, a whole read can still be FOLLOWED by real combat, and that combat
+  -- is new on top of it rather than another lower bound on the same ground.
+  stub.advance(70); read(2, 1, 60, 11)
+  eq(#ns.Meter.pulls, 3, "a read the clock allows is an ordinary new pull")
+  ok(ns.Meter.pulls[3].afterWhole == true, "marked as fought after the whole-key read")
+  eq(ns.Meter:Total().kicks, 50, "and ADDS to the reconciled 47 rather than being maxed into it")
+end
+
+print("\n[meter] combat the clock allows is never mistaken for old ground")
+do
+  -- The negative control, and the reason the test is elapsed time and not size:
+  -- a long pull after a long gap is perfectly ordinary, however big it is.
+  loadAddon(false)
+  stub.fire("PLAYER_LOGIN")
+  stub.meter.available = true
+  stub.meter.secret = false
+  stub.meter.secretNames = false
+  stub.challenge = { level = 13, mapID = 2097, mapName = "The Blinding Vale", deaths = 0 }
+  stub.fire("CHALLENGE_MODE_START")
+
+  local function read(k, duration, sid)
+    stub.meter.sessionID = sid
+    stub.setMeter("current", {
+      { name = "Nimibear", class = "DRUID", icon = 1, guid = "P-n",
+        kicks = k, taken = 1000, deaths = 0 },
+    }, { duration = duration })
+    stub.fire("PLAYER_REGEN_ENABLED")
+  end
+
+  stub.advance(30); read(1, 20, 2)
+  -- Ten minutes pass and a nine-minute fight lands in a fresh session. Bigger
+  -- than everything harvested so far, and entirely new combat.
+  stub.advance(600); read(14, 540, 3)
+  eq(#ns.Meter.pulls, 2, "appended as the pull it is")
+  ok(ns.Meter.wholeKey == nil, "and nothing was taken for a whole-key read")
+  eq(ns.Meter:Total().kicks, 15, "so the run total adds them")
+end
+
 print("\n[parser] handing off to tests/parser.lua")
 local interp = arg[-1] or "luajit"
 local okParser = os.execute(("%s tests/parser.lua"):format(interp))

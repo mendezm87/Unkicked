@@ -204,6 +204,18 @@ The whole-key read stays selectable in the dropdown as `the client's whole key`,
 so both numbers the run total is built from can be looked at directly, and
 `/uk audit` reports how many were reconciled.
 
+**Recognising it does not wait for the key to be marked over.** On a Blinding
+Vale +13 the whole key arrived on the falling edge of the restriction — which is
+the moment the last boss dies — and `PLAYER_REGEN_ENABLED` beat
+`CHALLENGE_MODE_COMPLETED` to the harvest, so a read holding all 68 of the key's
+interrupts was filed as a 19th pull and the panel read 111. What identifies such
+a read without an event is arithmetic: a session's duration is *combat* time,
+and a read holding more seconds of combat than the wall clock has given it since
+we last looked is necessarily counting combat from before we last looked. 25:26
+cannot have happened in the 3:25 since the previous harvest. Combat harvested
+*after* a whole-key read is new on top of it, so it is added rather than
+maximised against it.
+
 A key that was **restarted after a wipe** never reaches
 `CHALLENGE_MODE_COMPLETED`, and it is stored as the attempt it was: the line
 reads `(abandoned)`, so six tries at one dungeon are six distinguishable entries
