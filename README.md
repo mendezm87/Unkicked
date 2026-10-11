@@ -230,6 +230,32 @@ out is harvested first, because leaving the restricted map is also the moment th
 amounts go plain; then the run is archived as `(abandoned)` instead of staying
 the panel's live `run` until you log in again.
 
+### How the window is laid out
+
+Five lines, each of which owns its own row and cannot be written over by another:
+
+```
+Unkicked   clear  cols  audit          <- name and the three buttons
+The Blinding Vale +13  45:58  18 pulls  30m ago              v   <- segment, click for the list
+who            kicks v   died    taken    spells             <- headings, click to sort
+Nimibear-Trollbane  27       0    259.8m       10
+...
+a key from an earlier session -- stored, not live            <- footer, one line
+log: on
+```
+
+The segment label is the only part whose length is unbounded — it names the
+dungeon, the key level, the clock, the pull count and how long ago it was stored
+— so it has a line to itself, bounded at both ends. A label longer than the line
+is truncated by the widget; it can never be drawn across the buttons above it.
+
+The dropdown chevron is a region at the right edge of that line rather than the
+last character of the label, so a long label cannot push it off.
+
+A sorted heading carries its direction as `kicks v` / `kicks ^`, and a sort that
+was asked for but could not be applied carries `-` instead — an arrow is a claim
+about the order of the rows under it.
+
 ### Choosing what the last column shows
 
 The last column used to answer exactly one question — how much damage each

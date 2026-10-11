@@ -1162,6 +1162,30 @@ do
       :format(tostring(headY), tostring(rowY)))
   ok(rowY ~= nil and headY ~= nil and math.abs(rowY - headY) >= 16,
     "with a full row of clearance between them")
+
+  -- R-49. The same fault one line up: the segment label shared the title bar
+  -- with clear/cols/audit, right-anchored and unbounded, so "saved  The
+  -- Blinding Vale +13  45:58  18 pulls  30m ago" was drawn straight across all
+  -- three buttons. The label gets its own line, and it is bounded on both sides
+  -- so an even longer one truncates instead of escaping the panel.
+  local titleY = f.title._points[1] and f.title._points[1][3]
+  local segY = f.seg._points[1] and f.seg._points[1][3]
+  ok(titleY ~= nil and segY ~= nil and math.abs(titleY - segY) >= 16,
+    ("the segment label is not on the button line (title %s, seg %s)")
+      :format(tostring(titleY), tostring(segY)))
+  for _, b in ipairs({ "clear", "cols", "audit" }) do
+    local by = f[b]._points[1] and f[b]._points[1][3]
+    ok(by ~= nil and math.abs(by - segY) >= 16,
+      ("and neither is the %s button (%s)"):format(b, tostring(by)))
+  end
+  ok(#f.seg.text._points >= 2,
+    ("the label is bounded on both sides, so a long one truncates (%d anchors)")
+      :format(#f.seg.text._points))
+  ok(f.seg.arrow ~= nil and f.seg.arrow:GetText() == "v",
+    "the chevron is its own region at the right edge")
+  ok(f.seg.text:GetText():sub(-1) ~= "v",
+    ("so the label does not carry it and cannot push it off (%q)")
+      :format(f.seg.text:GetText()))
   -- R-21. The live segment is the KEY so far, never "pull N": measured on a real
   -- +13, C_DamageMeter's Current session spanned the whole 24:18 run.
   ok(f.seg.text:GetText():find("key so far", 1, true) ~= nil,
@@ -1411,6 +1435,10 @@ do
   ns.Panel:SortBy("kicks")
   ok(f.head.c2:GetText():find("v", 1, true) ~= nil,
     ("the sorted heading carries the direction (%q)"):format(f.head.c2:GetText()))
+  -- Separated from the label. Concatenated, "kicks" and its mark render as
+  -- "kicksv", which is what the heading strip actually looked like in game.
+  ok(f.head.c2:GetText():find("kicks v", 1, true) ~= nil,
+    ("the mark is spaced off the label (%q)"):format(f.head.c2:GetText()))
   ok(f.head.c4:GetText():find("v", 1, true) == nil, "and the others do not")
   ns.Panel:SortBy("kicks")
   ok(f.head.c2:GetText():find("^", 1, true) ~= nil, "flipped, the arrow flips with it")
@@ -1435,7 +1463,7 @@ do
   -- per-spell drill-down, which cannot run against a secret GUID at all.
   ns.db.sort = { by = "kickable", desc = true }
   ns.Panel:Refresh()
-  ok(f.head.c5:GetText():find("kickable-", 1, true) ~= nil,
+  ok(f.head.c5:GetText():find("kickable -", 1, true) ~= nil,
     ("an unapplied sort shows a dash, never an arrow (%q)"):format(f.head.c5:GetText()))
   ok(f.footer:GetText():find("sort by kickable", 1, true) ~= nil,
     ("and the footer says why (%q)"):format(f.footer:GetText()))

@@ -25,17 +25,28 @@ local Panel = {}
 ns.Panel = Panel
 
 local ROW_H = 16
-local WIDTH = 360
+local WIDTH = 380
 
 -- Column geometry, shared by the data rows AND the header, because the two
 -- drifting apart is exactly how the header ends up sitting on top of row one.
 --   c1 name/spell (flexes)  c2 kicks  c3 died  c4 taken  c5 kickable/names
-local C2_W, C3_W, C4_W, C5_W = 38, 28, 56, 60
+-- A sorted heading carries its direction mark INSIDE the column, so the width
+-- has to hold "kicks v" and not just "kicks".
+local C2_W, C3_W, C4_W, C5_W = 44, 34, 56, 60
 local GAP = 6
 local C1_W = WIDTH - 16 - (C2_W + C3_W + C4_W + C5_W + GAP * 4)
 
+-- The title bar is TWO lines, not one. "Unkicked" and the three buttons own the
+-- first; the segment label owns the second. They shared a line until now, with
+-- the label right-anchored and unbounded, so a heading like "saved  The Blinding
+-- Vale +13  45:58  18 pulls  30m ago" grew leftwards straight across clear, cols
+-- and audit. The buttons were still there and still clickable -- they were just
+-- drawn under a sentence, which is the overlap you see in a screenshot.
+local TITLE_Y = 6
+local SEG_Y = 22
+
 -- The first data row sits BELOW the header row, not on it.
-local HEAD_Y = 22
+local HEAD_Y = SEG_Y + ROW_H
 local ROWS_Y = HEAD_Y + ROW_H
 
 local frame, rows, menu, clearBox, colBox, auditBox
@@ -253,10 +264,11 @@ end
 -- shape: sizing to the ceiling leaves a five-man group sitting in a box with
 -- five empty lines under it, which reads as a broken addon.
 local function heightFor(m, n)
-  if m == "blind" then return 22 + ROW_H * 2 + 10 end
+  if m == "blind" then return SEG_Y + ROW_H * 2 + 10 end
   n = math.min(n or rowCount(m), rowCount(m))
-  -- header row + rows + footer + log line
-  return 22 + ROW_H + ROW_H * math.max(n, 1) + 18 + ROW_H
+  -- title + segment + header row + rows + footer + log line. Derived from
+  -- ROWS_Y rather than repeating it, so moving a line moves the box with it.
+  return ROWS_Y + ROW_H * math.max(n, 1) + 18 + ROW_H
 end
 
 function Panel:Layout(n)
@@ -290,7 +302,7 @@ function Panel:Build()
   end)
 
   frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  frame.title:SetPoint("TOPLEFT", 8, -6)
+  frame.title:SetPoint("TOPLEFT", 8, -TITLE_Y)
   frame.title:SetText("Unkicked")
 
   -- Clearing used to live only at the bottom of the segment dropdown, and only
@@ -300,7 +312,7 @@ function Panel:Build()
   -- always opens, and the scopes that would take nothing are listed greyed
   -- rather than omitted.
   frame.clear = CreateFrame("Button", nil, frame)
-  frame.clear:SetPoint("TOPLEFT", 62, -5)
+  frame.clear:SetPoint("TOPLEFT", 62, -(TITLE_Y - 1))
   frame.clear:SetSize(40, ROW_H)
   frame.clear.text = frame.clear:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   frame.clear.text:SetPoint("LEFT")
@@ -324,7 +336,7 @@ function Panel:Build()
   -- like a count. It is a picker now, in the title bar rather than behind a
   -- slash command, for the same reason clearing moved there.
   frame.cols = CreateFrame("Button", nil, frame)
-  frame.cols:SetPoint("TOPLEFT", 102, -5)
+  frame.cols:SetPoint("TOPLEFT", 102, -(TITLE_Y - 1))
   frame.cols:SetSize(34, ROW_H)
   frame.cols.text = frame.cols:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   frame.cols.text:SetPoint("LEFT")
@@ -348,7 +360,7 @@ function Panel:Build()
   -- lines that matter -- field names. So it gets a button and a box you can
   -- select out of, rather than only a command whose output you have to photograph.
   frame.audit = CreateFrame("Button", nil, frame)
-  frame.audit:SetPoint("TOPLEFT", 136, -5)
+  frame.audit:SetPoint("TOPLEFT", 136, -(TITLE_Y - 1))
   frame.audit:SetSize(38, ROW_H)
   frame.audit.text = frame.audit:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   frame.audit.text:SetPoint("LEFT")
@@ -373,11 +385,22 @@ function Panel:Build()
   -- but the overall WE show is the keystone window, summed from the pulls, so it
   -- agrees with what the offline parser reports for the same run.
   frame.seg = CreateFrame("Button", nil, frame)
-  frame.seg:SetPoint("TOPRIGHT", -8, -4)
-  frame.seg:SetSize(130, ROW_H)
+  frame.seg:SetPoint("TOPLEFT", 8, -SEG_Y)
+  frame.seg:SetPoint("TOPRIGHT", -8, -SEG_Y)
+  frame.seg:SetHeight(ROW_H)
+  -- The chevron is its own region at the right edge rather than two characters
+  -- on the end of the label: the label is the part that can be any length, and
+  -- a long one used to push the chevron off wherever it landed.
+  frame.seg.arrow = frame.seg:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  frame.seg.arrow:SetPoint("RIGHT")
+  frame.seg.arrow:SetText("v")
   frame.seg.text = frame.seg:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  frame.seg.text:SetPoint("RIGHT")
-  frame.seg.text:SetJustifyH("RIGHT")
+  frame.seg.text:SetPoint("LEFT")
+  -- Bounded on BOTH sides, so a label too long for the line is truncated by the
+  -- widget instead of being drawn over whatever is next to it.
+  frame.seg.text:SetPoint("RIGHT", frame.seg.arrow, "LEFT", -GAP, 0)
+  frame.seg.text:SetJustifyH("LEFT")
+  frame.seg.text:SetWordWrap(false)
   frame.seg:SetScript("OnClick", function(self, button)
     -- Right-click cycles, left-click opens the list. Cycling is the muscle
     -- memory from when there were only two segments; the list is the only way
@@ -441,6 +464,9 @@ function Panel:Build()
   frame.footer:SetPoint("BOTTOMLEFT", 8, 6 + ROW_H)
   frame.footer:SetPoint("BOTTOMRIGHT", -8, 6 + ROW_H)
   frame.footer:SetJustifyH("LEFT")
+  -- One line. Anchored at the BOTTOM, a wrapped footer grows UPWARDS into the
+  -- last player's row.
+  frame.footer:SetWordWrap(false)
 
   -- Whether the client is writing WoWCombatLog.txt. On 12.x this is the one
   -- genuinely load-bearing thing the in-game panel still reports, because the
@@ -970,7 +996,9 @@ local function headLabel(key, by, desc, applied)
   -- A requested sort that could not be applied gets a dash, not an arrow: the
   -- arrow is a claim about the order of the rows below it.
   local mark = applied and (desc and "v" or "^") or "-"
-  return ("|cffffd200%s%s|r"):format(label, mark)
+  -- Spaced. "kicksv" is not a word, and it is what a heading and its mark read
+  -- as when they are concatenated.
+  return ("|cffffd200%s %s|r"):format(label, mark)
 end
 
 -- Click the same column again to flip the direction; a different one starts
@@ -1074,7 +1102,7 @@ local function refreshMeter()
   end
   data = data or {}
 
-  frame.seg.text:SetText(("%s%s|r |cff808080v|r"):format(segColor(kind), label))
+  frame.seg.text:SetText(("%s%s|r"):format(segColor(kind), label))
 
   -- Sorted here, not in Meter:View: the order is a property of this panel's
   -- headings, and the same rows are handed unchanged to the chat report.
@@ -1174,6 +1202,10 @@ function Panel:Refresh()
   -- The dropdown only ever lists meter segments, so it has no business being on
   -- screen in the other two modes.
   if m ~= "meter" and menu then menu:Hide() end
+
+  -- The chevron is a promise that clicking opens a list, and only the meter
+  -- segments have one.
+  frame.seg.arrow:SetShown(m == "meter")
 
   if m == "feed" then refreshFeed()
   elseif m == "meter" then refreshMeter()
